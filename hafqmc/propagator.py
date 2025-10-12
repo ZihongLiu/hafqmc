@@ -12,8 +12,7 @@ from .utils import fix_init
 from .utils import pack_spin, unpack_spin, block_spin
 from .utils import chol_qr
 from .operator import OneBody, AuxField, AuxFieldNet
-from .operator import OneBodyPW, AuxFieldPW
-from .hamiltonian import _make_ghf, _has_spin, Hamiltonian, HamiltonianPW
+from .hamiltonian import _make_ghf, _has_spin, Hamiltonian
 
 
 class Propagator(nn.Module):
@@ -30,19 +29,9 @@ class Propagator(nn.Module):
 
     @nn.nowrap
     @classmethod
-    def create(cls, hamiltonian, type="normal", **kwargs):
-        if isinstance(hamiltonian, HamiltonianPW):
-            return cls.create_ueg(hamiltonian, **kwargs)
-        elif type.lower() in ("cc", "ccsd"):
-            return cls.create_ccsd(hamiltonian, **kwargs)
-        else:
-            return cls.create_normal(hamiltonian, **kwargs)
-
-    @nn.nowrap
-    @classmethod
-    def create_normal(cls, 
-            hamiltonian, 
-            init_tsteps, *, 
+    def create(cls, 
+            hamiltonian: Hamiltonian, 
+            init_tsteps: Sequence[float], *, 
             max_nhs: Optional[int] = None,
             expm_option: Union[str, tuple] = (),
             parametrize: Union[bool, str, Sequence[str]] = True,
@@ -53,6 +42,7 @@ class Propagator(nn.Module):
             mf_subtract: bool = False, 
             spin_mixing: Union[bool, float, complex] = False, 
             **init_kwargs):
+        """Creates a Propagator for a generic Hamiltonian (e.g., lattice models)."""
         # prepare data
         twfn = hamiltonian.wfn0
         init_hmf, init_vhs, init_enuc = hamiltonian.make_proj_op(twfn)
@@ -100,97 +90,6 @@ class Propagator(nn.Module):
             cplx_tsteps=_cd["tsteps"], 
             **init_kwargs)
 
-    @nn.nowrap
-    @classmethod
-    def create_ccsd(cls, 
-            hamiltonian, *, 
-            with_mask: bool =True, 
-            expm_option: Union[str, tuple] = (),
-            parametrize: Union[bool, str, Sequence[str]] = True,
-            use_complex: Union[bool, str, Sequence[str]] = False,
-            init_random: float = 0.,
-            mf_subtract: bool = False, 
-            **init_kwargs):
-        # prepare data
-        init_hmf, init_vhs, mask = hamiltonian.make_ccsd_op()
-        if with_mask:
-            expm_option = ("loop", 1, 1)
-        else:
-            mask = None
-        mfwfn = hamiltonian.wfn0 if mf_subtract else None
-        # handle parameter options
-        _pd = parse_bool(("hmf", "vhs", "tsteps"), parametrize)
-        _ifcplx = lambda t: _t_cplx if t else _t_real
-        _cd = parse_bool(("hmf", "tsteps"), use_complex)
-        # make one body operator
-        hmf_op = OneBody(
-            init_hmf, 
-            parametrize=_pd["hmf"], 
-            init_random=init_random,
-            hermite_out=False,
-            dtype=_ifcplx(_cd["hmf"]),
-            expm_option=expm_option)
-        # make two body operator
-        vhs_op = AuxField(
-            init_vhs,
-            trial_wfn=mfwfn,
-            parametrize=_pd["vhs"],
-            init_random=init_random,
-            hermite_out=False,
-            dtype=_t_cplx,
-            expm_option=expm_option)
-        return cls(hmf_op, vhs_op, 
-            init_tsteps=[-1.], 
-            para_tsteps=_pd["tsteps"], 
-            cplx_tsteps=_cd["tsteps"], 
-            sqrt_tsvpar=False,
-            priori_mask=mask, 
-            **init_kwargs)
-
-    @nn.nowrap
-    @classmethod
-    def create_ueg(cls, 
-            hamiltonian, 
-            init_tsteps, *, 
-            expm_option: Union[str, tuple] = (),
-            parametrize: Union[bool, str, Sequence[str]] = True,
-            use_complex: Union[bool, str, Sequence[str]] = False,
-            k_symmetric: Union[bool, str, Sequence[str]] = False,
-            init_random: float = 0.,
-            **init_kwargs):
-        # handle parameter options
-        _pd = parse_bool(("hmf", "vhs", "tsteps"), parametrize)
-        _ifcplx = lambda t: _t_cplx if t else _t_real
-        _cd = parse_bool(("hmf", "vhs", "tsteps"), use_complex)
-        _sd = parse_bool(("hmf", "vhs"), k_symmetric)
-        # prepare data
-        hmf, vhs, kmask, qmask = hamiltonian.make_proj_op()
-        # make one body operator
-        hmf_op = OneBodyPW(
-            hmf, 
-            kmask,
-            parametrize=_pd["hmf"], 
-            k_symmetric=_sd["hmf"],
-            init_random=init_random,
-            dtype=_ifcplx(_cd["hmf"]),
-            expm_option=expm_option)
-        # make two body operator
-        vhs_op = AuxFieldPW(
-            vhs, 
-            kmask,
-            qmask,
-            parametrize=_pd["vhs"],
-            q_symmetric=_sd["vhs"],
-            init_random=init_random,
-            dtype=_ifcplx(_cd["vhs"]),
-            expm_option=expm_option)
-        # build propagator
-        return cls(hmf_op, vhs_op, 
-            init_tsteps=init_tsteps, 
-            para_tsteps=_pd["tsteps"], 
-            cplx_tsteps=_cd["tsteps"], 
-            **init_kwargs)
-            
     @nn.nowrap
     def fields_shape(self):
         nts = len(self.init_tsteps)
@@ -268,7 +167,6 @@ class Propagator(nn.Module):
         # return both the wave function matrix and the log of scalar part
         return wfn, log_weight.real
 
-
 def orthonormalize_ns(wfn):
     owfn, rmat = chol_qr(wfn)
     rdiag = rmat.diagonal(0,-1,-2)
@@ -277,7 +175,6 @@ def orthonormalize_ns(wfn):
     # owfn *= rdiag / rabs
     logd = jnp.sum(jnp.log(rdiag.real), axis=-1)
     return owfn, logd
-
 
 def orthonormalize(wfn, nelec=None):
     if isinstance(wfn, tuple):
@@ -290,7 +187,6 @@ def orthonormalize(wfn, nelec=None):
         return pack_spin(owfn)[0], logd
     else:
         return orthonormalize_ns(wfn)
-
 
 def normalize(wfn):
     norm = jnp.linalg.norm(wfn, 2, -2, keepdims=True)

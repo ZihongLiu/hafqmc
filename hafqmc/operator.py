@@ -6,7 +6,7 @@ from typing import Optional, Sequence, Union
 from functools import partial
 
 from .utils import _t_real, _t_cplx
-from .utils import fix_init, symmetrize, Serial, cmult, scatter
+from .utils import fix_init, symmetrize, Serial, cmult
 from .utils import warp_spin_expm, make_expm_apply
 from .hamiltonian import _align_rdm, calc_rdm
 
@@ -158,110 +158,3 @@ def meanfield_subtract(vhs, rdm, cutoff=None):
         vbar = vbar / (jnp.maximum(jnp.linalg.norm(vbar), cutoff) / cutoff)
     vhs = vhs - vbar.reshape(-1,1,1) * jnp.eye(vhs.shape[-1]) / nelec
     return vhs, vbar
-
-
-# below are classes and functions for pw basis
-
-class OneBodyPW(nn.Module):
-    init_hmf: jnp.array
-    kmask: Optional[jnp.array] = None
-    parametrize: bool = False
-    k_symmetric: bool = False
-    init_random: float = 0.
-    dtype: Optional[jnp.dtype] = None
-    expm_option: Union[str, tuple] = ()
-
-    @property
-    def nbasis(self):
-        return self.init_hmf.shape[-1]
-
-    def setup(self):
-        if self.parametrize:
-            if self.k_symmetric:
-                raw_hmf, self.kinvidx = jnp.unique(self.init_hmf, return_inverse=True)
-            else:
-                raw_hmf = self.init_hmf
-            self.hmf = self.param("hmf", fix_init, 
-                raw_hmf, self.dtype, self.init_random)
-        else:
-            self.hmf = self.init_hmf
-    
-    def __call__(self, step):
-        hmf = self.hmf
-        if self.parametrize and self.k_symmetric:
-            hmf = hmf[self.kinvidx]
-        hmf = cmult(step, hmf)
-        return hmf
-
-    @property
-    def expm_apply(self):
-        matmul_fn = lambda A, B: jnp.einsum('k,ki->ki', A, B)
-        _expm_op = self.expm_option
-        _expm_op = (_expm_op,) if isinstance(_expm_op, str) else _expm_op
-        return make_expm_apply(*_expm_op, matmul_fn=matmul_fn)
-
-
-class AuxFieldPW(nn.Module):
-    init_vhs: jnp.ndarray
-    kmask: jnp.ndarray
-    qmask: jnp.ndarray
-    parametrize: bool = False
-    q_symmetric: bool = False
-    init_random: float = 0.
-    dtype: Optional[jnp.dtype] = None
-    expm_option: Union[str, tuple] = ()
-
-    @property
-    def nbasis(self):
-        return int(self.kmask.sum().item())
-
-    @property
-    def nfield(self):
-        return self.init_vhs.shape[0] * 2
-
-    def setup(self):
-        if self.q_symmetric and self.parametrize:
-            raw_vhs, self.vinvidx = jnp.unique(self.init_vhs, return_inverse=True)
-        else:
-            raw_vhs = self.init_vhs
-        vhs = jnp.tile(raw_vhs, (4, 1)) # for A and B; plus and minus Q
-        if self.parametrize:
-            self.vhs = self.param("vhs", fix_init, 
-                vhs, self.dtype, self.init_random)
-        else:
-            self.vhs = vhs
-        self.nq = self.init_vhs.shape[0]
-        self.nhs = self.nq * 2
-    
-    def __call__(self, step, fields, curr_wfn=None):
-        fields = fields.reshape(2, self.nq)
-        # fields = fields.at[:, self.nq//2].set(0)
-        log_weight = - 0.5 * (fields ** 2).sum()
-        vhs = self.vhs
-        if self.q_symmetric and self.parametrize:
-            vhs = vhs[:, self.vinvidx]
-        vplus = jnp.array([1, 1j]) @ (fields * vhs[(0,2), :])   # rho(Q) terms
-        vminus = jnp.array([1, -1j]) @ (fields * vhs[(1,3), :]) # rho(-Q) terms
-        vsum = vplus + jnp.flip(vminus)
-        vsum = cmult(step, vsum)
-        # remove constant multiplication at Q = 0
-        vsum = vsum.at[self.nq//2].set(0)
-        return vsum, log_weight
-    
-    @property
-    def expm_apply(self):
-        from jax.scipy.signal import convolve
-        from .utils import fftconvolve
-        # sum over all Q for one electron
-        def conv1ele(vhs, wfn):
-            dtype = vhs.real.dtype
-            vq_mesh = scatter(vhs, self.qmask)
-            wk_mesh = scatter(wfn, self.kmask)
-            nwk_mesh = convolve(vq_mesh, wk_mesh, 'valid')
-            # nwk_mesh = fftconvolve(vq_mesh, wk_mesh, 'valid')
-            return nwk_mesh[self.kmask]
-        # map it for all electrons (at the last axis)
-        matmul_fn = jax.vmap(conv1ele, in_axes=(None, -1), out_axes=-1)
-        _expm_op = self.expm_option
-        _expm_op = (_expm_op,) if isinstance(_expm_op, str) else _expm_op
-        return make_expm_apply(*_expm_op, matmul_fn=matmul_fn)

@@ -8,8 +8,8 @@ from ml_collections import ConfigDict
 from tensorboardX import SummaryWriter
 from typing import NamedTuple
 
-from .molecule import build_mf
-from .hamiltonian import Hamiltonian, HamiltonianPW
+from .lattice import hamiltonian_from_lattice
+from .hamiltonian import Hamiltonian
 from .ansatz import Ansatz, BraKet
 from .estimator import make_eval_total
 from .sampler import make_sampler, make_multistep, make_batched, SamplerUnion
@@ -123,30 +123,22 @@ def train(cfg: ConfigDict):
     sample_step = -(-sample_size // sample_batch)
     sample_size = sample_batch * sample_step
     sample_prop = cfg.sample.prop_steps
-    eval_batch = cfg.optim.batch if cfg.optim.batch is not None else sample_batch
+    eval_batch = cfg.optim.get('batch') or sample_batch
     if sample_size % eval_batch != 0:
         logger.warning("Eval batch size not dividing sample size, using sample batch size")
         eval_batch = sample_batch
 
     # set up the hamiltonian
     if cfg.restart.hamiltonian is None:
-        if "ueg" not in cfg:
-            logger.info("Building molecule and doing HF calculation to get Hamiltonian")
-            mf = build_mf(**cfg.molecule)
-            print(f"# HF energy from pyscf calculation: {mf.e_tot}")
-            if not mf.converged:
-                logger.warning("HF calculation does not converge!")
-            hamiltonian = Hamiltonian.from_pyscf(mf, **cfg.hamiltonian)
-        else:
-            logger.info("Using uniform electron gas Hamiltonian")
-            hamiltonian = HamiltonianPW.from_ueg(**cfg.ueg)
-            print(f"# HF energy for UEG hamiltonian: {hamiltonian.local_energy()}")
+        logger.info("Building lattice model Hamiltonian")
+        hamil_data = hamiltonian_from_lattice(cfg.lattice, cfg.get("electrons", {}))
+        hamiltonian = Hamiltonian(*hamil_data)
+        print(f"# HF energy for lattice model: {hamiltonian.local_energy()}")
         save_pickle(cfg.log.hamil_path, hamiltonian.to_tuple())
     else:
         logger.info("Loading Hamiltonian from saved file")
         hamil_data = load_pickle(cfg.restart.hamiltonian)
-        HamCls = Hamiltonian if len(hamil_data) <= 5 else HamiltonianPW
-        hamiltonian = HamCls(*hamil_data)
+        hamiltonian = Hamiltonian(*hamil_data)
         print(f"# HF energy from loaded: {hamiltonian.local_energy()}")
 
     # set up all other classes and functions
