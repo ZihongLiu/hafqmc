@@ -80,7 +80,16 @@ def calc_rdm(V, U):
 
 def calc_e1b(h1e, rdm):
     gd, gl = _align_rdm(rdm, h1e.shape[-1])
-    return (h1e * gd).sum()
+    if h1e.ndim == 2:
+        # Spin-independent h1e, use total density matrix
+        return (h1e * gd).sum()
+    elif h1e.ndim == 3 and h1e.shape[0] == 2:
+        # Spin-dependent h1e, use spin-dependent density matrices
+        # gl has shape (2, N, N), h1e has shape (2, N, N)
+        # Broadcasting computes (h1e[0]*gl[0] + h1e[1]*gl[1]).sum()
+        return (h1e * gl).sum()
+    else:
+        raise ValueError(f"Invalid shape for h1e: {h1e.shape}")
 
 
 def calc_e2b(eri, rdm):

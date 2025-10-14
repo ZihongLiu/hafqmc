@@ -15,20 +15,21 @@ def get_config():
         'name': 'hubbard',
         'nx': 4,
         'ny': 4,
-        't': 1.0,
+        't_up_x': 1.0,
+        't_up_y': 1.0,
         'U': 4.0,
         'periodic': True
     }
     cfg.electrons = {
-        'n_up': (4*4) // 2,
-        'n_down': (4*4) // 2
+        'n_up': (4*4) // 2 -3,
+        'n_down': (4*4) // 2 -3
     }
 
     # Ansatz configuration
     cfg.ansatz = {
         'name': 'default',
         'init_tsteps': [0.01], # Initial time step for the propagator
-        'parametrize': 'wfn',  # Parametrize the wavefunction directly
+        'parametrize': 'tsteps',  # Parametrize the wavefunction directly
         'init_random': 1e-2,
         'use_complex': False
     }
@@ -36,7 +37,7 @@ def get_config():
 
     # Sampler configuration
     cfg.sample = {
-        'sampler': 'metropolis',
+        'sampler': 'langevin',
         'size': 2560, # Number of walkers
         'batch': 128,
         'prop_steps': 20, # Propagation steps per block
