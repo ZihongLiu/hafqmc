@@ -36,11 +36,12 @@ def get_config():
 
     # Sampler configuration
     cfg.sample = {
-        'sampler': 'mala',
+        'sampler': 'blackjax',
+        'step_size': 1e-1,
         'size': 2560, # Number of walkers
         'batch': 512,
         'prop_steps': 20, # Propagation steps per block
-        'burn_in': 100
+        'burn_in': 10
     }
 
     # Optimizer configuration

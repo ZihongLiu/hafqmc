@@ -151,13 +151,20 @@ def train(cfg: ConfigDict):
     braket = BraKet(ansatz, trial)
     if (sample_prop is None or isinstance(sample_prop, int)
       or (isinstance(sample_prop, (tuple, list)) and len(sample_prop) == 2)):
-        sampler_1s_1c = make_sampler(braket, max_prop=sample_prop,
-            **ensure_mapping(cfg.sample.sampler, default_key="name"))
-    else:
-        sampler_1s_1c = SamplerUnion({
-            mp: make_sampler(braket, max_prop=mp,
-                **ensure_mapping(cfg.sample.sampler, default_key="name"))
-            for mp in sample_prop})
+                sampler_config = cfg.sample.to_dict()
+                sampler_config['name'] = sampler_config.pop('sampler')
+                # These are used by wrappers, not the core sampler maker
+                for k in ('size', 'batch', 'prop_steps', 'burn_in'):
+                    sampler_config.pop(k, None)
+            
+                if (sample_prop is None or isinstance(sample_prop, int)
+                  or (isinstance(sample_prop, (tuple, list)) and len(sample_prop) == 2)):
+                    sampler_1s_1c = make_sampler(braket, max_prop=sample_prop, **sampler_config)
+                else:
+                    sampler_1s_1c = SamplerUnion({
+                        mp: make_sampler(braket, max_prop=mp, **sampler_config)
+                        for mp in sample_prop})
+            
     sampler_1s_nc = make_batched(sampler_1s_1c, sample_batch, concat=False)
     mc_sampler = make_multistep(sampler_1s_nc, sample_step, concat=True)
     lr_schedule = make_lr_schedule(**cfg.optim.lr)
