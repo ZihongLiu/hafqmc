@@ -332,7 +332,7 @@ def wrap_if_pmap(p_func):
 
     def p_func_if_pmap(obj, axis_name):
         try:
-            jax.core.axis_frame(axis_name)
+            lax.axis_size(axis_name)
             return p_func(obj, axis_name)
         except NameError:
             return obj
