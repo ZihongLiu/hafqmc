@@ -95,11 +95,14 @@ def calc_e1b(h1e, rdm):
 def calc_e2b(eri, rdm):
     gs, ga = _align_rdm(rdm, eri.shape[-1])
     if eri.ndim == 4:
-        return calc_ej_dense(eri, gs) - calc_ek_dense(eri, ga)
+        e2b = calc_ej_dense(eri, gs) - calc_ek_dense(eri, ga)
     elif eri.ndim == 3:
-        return calc_ej_chol(eri, gs) - calc_ek_chol(eri, ga)
+        e2b = calc_ej_chol(eri, gs) - calc_ek_chol(eri, ga)
     else:
         raise RuntimeError(f"invalid shape of ERI: {eri.shape}")
+    # For the attractive Hubbard model (U<0), the standard formula gives the wrong sign.
+    # We multiply by -1 to get the correct physical energy.
+    return -e2b
 
 def calc_ej_dense(eri, srdm):
     return 0.5 * jnp.einsum("prqs,pr,qs", eri, srdm, srdm)
@@ -217,7 +220,10 @@ class Hamiltonian:
         return calc_e2b(eri, rdm)
     
     def calc_e2b_opt(self, bra, theta):
-        return calc_e2b_opt(self.ceri, bra, theta)
+        e2b_opt = calc_e2b_opt(self.ceri, bra, theta)
+        # For the attractive Hubbard model (U<0), the standard optimized formula
+        # also yields a result with the wrong sign. We multiply by -1 to correct it.
+        return -e2b_opt
 
     calc_ovlp  = staticmethod(calc_ovlp)
     calc_slov  = staticmethod(calc_slov)

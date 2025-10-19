@@ -41,34 +41,22 @@ def get_hubbard_square_lattice(nx, ny, t_x=1.0, t_y=1.0, periodic=True):
 
 def get_hubbard_eri_chol(nsites, U):
     """
-    Generates the Cholesky-decomposed ERI for the Hubbard model.
-    This is a "fake" Cholesky decomposition that represents the on-site U term.
+    Generates the Cholesky-decomposed ERI for the attractive Hubbard model (U < 0).
 
     Args:
         nsites (int): Total number of lattice sites.
-        U (float): The on-site interaction strength.
+        U (float): The on-site interaction strength (must be negative).
 
     Returns:
         numpy.ndarray: The Cholesky vectors `ceri` of shape (nsites, nsites, nsites).
     """
-    if U == 0:
-        return np.zeros((0, nsites, nsites))
+    if U >= 0:
+        raise ValueError("This code is now configured for the attractive Hubbard model, so U must be negative.")
     
-    # For U > 0, we use the spin-2 HS decomposition which acts on (n_i - 1)^2
-    # This requires a field coupling to sqrt(U/2)*(n_i-1).
-    # However, the current code uses a charge decomposition for molecules.
-    # Let's stick to a simpler representation that fits the existing code.
-    # We can represent U * n_i_up * n_i_down with a single cholesky vector per site.
     ceri = np.zeros((nsites, nsites, nsites))
-    if U > 0:
-        val = np.sqrt(U)
-        for i in range(nsites):
-            ceri[i, i, i] = val
-    else:
-        # For U < 0 (attractive Hubbard), the HS transformation is different.
-        # It couples to (n_i_up - n_i_down). This requires a more complex change.
-        # For now, we focus on U > 0. A simple trick is to use imaginary fields.
-        raise NotImplementedError("Attractive Hubbard model (U < 0) requires code changes to the propagator.")
+    val = np.sqrt(-U)
+    for i in range(nsites):
+        ceri[i, i, i] = val
 
     return ceri
 

@@ -28,7 +28,7 @@ def get_config():
     cfg.ansatz = {
         'name': 'default',
         'init_tsteps': [0.1]*4, # Initial time step for the propagator
-        'parametrize': 'wfn,tsteps,hmf,vhs',  # Parametrize the wavefunction directly
+        'parametrize': 'wfn,tsteps,hmf',  # Parametrize the wavefunction directly
         'init_random': 1e-2,
         'use_complex': False
     }
@@ -46,7 +46,7 @@ def get_config():
     # Optimizer configuration
     cfg.optim = {
         'optimizer': {'name': 'adam'},
-        'lr': {'start': 1e-2, 'decay': 3.3, 'delay': 80},
+        'lr': {'start': 0, 'decay': None, 'delay': 0},
         'iteration': 150,
         'batch': None, # Use sample_batch for evaluation
         'grad_clip': 1.0,
@@ -74,8 +74,8 @@ def get_config():
 
     # Restart configuration (if any)
     cfg.restart = {
-        'hamiltonian': None,
-        'params': None,
+        'hamiltonian': 'hamiltonian.pkl',
+        'params': 'checkpoint.pkl',
         'states': None
     }
     

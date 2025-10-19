@@ -131,16 +131,17 @@ class Propagator(nn.Module):
         if _has_spin(wfn) and wfn[0].shape[0] < self.hmf_op.nbasis:
             wfn = _make_ghf(wfn)
         wfn, nelec = pack_spin(wfn)
-        log_weight = 0. # + 0.5 * self.nts_v * self.nsite
+        log_weight = 0.
         # get prop times
         _ts_h = -self.ts_h # the negation of t goes to here
-        _ts_v = 1j * self.ts_v if self.sqrt_tsvpar else jnp.sqrt(-self.ts_v+0j)
+        # For U<0, ceri is real, so vhs is real. We need an imaginary time step.
+        _ts_v = jnp.sqrt(-self.ts_v+0j)
+
         # step functions in iterative prop
         def app_h(wfn, ii):
             hop = self.hmf_ops[ii]
             hmf = hop(_ts_h[ii])
             if hmf.ndim == 3:
-                # hmf is spin-dependent, wfn is packed. Unpack, apply, repack.
                 wfn_up, wfn_down = unpack_spin(wfn, nelec)
                 expm_apply_func = hop.expm_apply
                 wfn_up_new = expm_apply_func(hmf[0] * self.hmask, wfn_up)
@@ -151,15 +152,29 @@ class Propagator(nn.Module):
 
         def app_v(wfn, ii):
             vop = self.vhs_ops[ii]
-            cwfn = unpack_spin(wfn, nelec) if self.dyn_mfshift else None
-            vhs, lw = vop(_ts_v[ii], fields[ii], curr_wfn=cwfn)
-            return vop.expm_apply(vhs * self.vmask, wfn), lw
+            # For U<0, we apply +vhs to spin up and -vhs to spin down.
+            # First, get the spin-independent vhs matrix and its log_weight.
+            vhs, lw = vop(_ts_v[ii], fields[ii], curr_wfn=None) # curr_wfn is None as dyn_mfshift is off
+            
+            # Unpack, apply separately, and repack.
+            wfn_up, wfn_down = unpack_spin(wfn, nelec)
+            expm_apply_func = vop.expm_apply
+            
+            # Apply +vhs to spin up
+            wfn_up_new = expm_apply_func(vhs * self.vmask, wfn_up)
+            
+            # Apply -vhs to spin down
+            wfn_down_new = expm_apply_func(-vhs * self.vmask, wfn_down)
+            
+            return pack_spin((wfn_up_new, wfn_down_new))[0], lw
+
         def nmlz(wfn, ii):
             if self.ortho_intvl == 0:
                 return normalize(wfn)
             if self.ortho_intvl > 0 and (ii+1) % self.ortho_intvl == 0:
                 return orthonormalize(wfn, nelec)
             return wfn, 0.
+
         # iteratively apply step functions
         wfn = wfn+0j
         for its in range(self.nts_v):
