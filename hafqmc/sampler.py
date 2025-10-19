@@ -271,7 +271,7 @@ def make_blackjax(logdens_fn, fields_shape, beta=1., kernel="nuts", **kwargs):
         kernel = kmodule(logprob_fn, 
             inverse_mass_matrix=inv_mass, **kwargs)
         state, info = kernel.step(key, state)
-        return state, (unravel(state.position), -state.potential_energy)
+        return state, (unravel(state.position), state.logdensity)
 
     def init(key, params):
         sigma, mu = 1., 0.
