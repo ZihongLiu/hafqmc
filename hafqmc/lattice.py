@@ -158,6 +158,10 @@ class ChargeChannelHubbard2D:
                 "spin_counts": self.spin_counts,
             },
             "type": "charge_hubbard_2d",
+            "lattice_hubbard": {
+                "U": float(self.onsite_u),
+                "nsite": int(self.lattice.n_sites),
+            },
         }
         return Hamiltonian(
             h1e=jnp.asarray(h1e),

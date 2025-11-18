@@ -38,6 +38,32 @@ def _align_rdm(rdm, nao):
         lrdm = rdm.reshape(2,nao,2,nao).swapaxes(1,2)
         return lrdm[0,0]+lrdm[1,1], lrdm
     raise ValueError("unknown rdm type")
+
+
+def calc_e2b_hubbard(rdm, nao, onsite_u):
+    """Compute on-site Hubbard interaction U sum_i n_i,up n_i,dn using 1-RDM."""
+    _, blocks = _align_rdm(rdm, nao)
+    if blocks.ndim == 3:
+        r_up = blocks[0]
+        r_dn = blocks[-1]
+        mix_ud = mix_du = None
+    elif blocks.ndim == 4:
+        r_up = blocks[0,0]
+        r_dn = blocks[1,1]
+        mix_ud = blocks[0,1]
+        mix_du = blocks[1,0]
+    else:
+        raise ValueError("unsupported rdm structure for lattice Hubbard")
+    occ_up = jnp.diagonal(r_up, axis1=-2, axis2=-1).real
+    occ_dn = jnp.diagonal(r_dn, axis1=-2, axis2=-1).real
+    if mix_ud is None:
+        corr = jnp.zeros_like(occ_up)
+    else:
+        diag_ud = jnp.diagonal(mix_ud, axis1=-2, axis2=-1)
+        diag_du = jnp.diagonal(mix_du, axis1=-2, axis2=-1)
+        corr = (diag_ud * diag_du).real
+    docc = occ_up * occ_dn - corr
+    return onsite_u * docc.sum()
    
     
 def calc_ovlp_ns(V, U):
@@ -141,6 +167,12 @@ def calc_e1b(h1e, rdm):
     # jnp.einsum("ij,ij", h1e, rdm)
     gd, gl = _align_rdm(rdm, h1e.shape[-1])
     return (h1e * gd).sum()
+
+
+def calc_e1b_hubbard(h1e, rdm):
+    """One-body plus Hartree shift for lattice Hubbard models."""
+    e_kin = (h1e * rdm).sum()
+    return e_kin
 
 
 def calc_e2b(eri, rdm):
@@ -259,11 +291,23 @@ class Hamiltonian:
         self.wfn0 = tree_map(jnp.asarray, wfn0)
         self.aux = aux if aux is not None else {}
         self.nbasis = self.h1e.shape[-1]
+        lattice_meta = self.aux.get("lattice_hubbard")
+        if lattice_meta is not None:
+            lattice_meta = dict(lattice_meta)
+            lattice_meta.setdefault("nsite", self.nbasis // 2)
+            self._lattice_hubbard = lattice_meta
+        else:
+            self._lattice_hubbard = None
 
     def calc_e1b(self, rdm):
+        if self._lattice_hubbard is not None:
+            return calc_e1b_hubbard(self.h1e, rdm)
         return calc_e1b(self.h1e, rdm)
     
     def calc_e2b(self, rdm):
+        if self._lattice_hubbard is not None:
+            return calc_e2b_hubbard(rdm, self._lattice_hubbard["nsite"],
+                                    self._lattice_hubbard["U"])
         eri = self.ceri if self._eri is None else self._eri
         return calc_e2b(eri, rdm)
     
@@ -279,8 +323,11 @@ class Hamiltonian:
         """the normalized energy from two slater determinants"""
         bra = bra if bra is not None else self.wfn0
         ket = ket if ket is not None else self.wfn0
-        le_fn = (self.local_energy_opt 
-            if optimize and self._eri is None else self.local_energy_raw)
+        if self._lattice_hubbard is not None:
+            le_fn = self.local_energy_raw
+        else:
+            le_fn = (self.local_energy_opt 
+                if optimize and self._eri is None else self.local_energy_raw)
         return le_fn(bra, ket)
 
     def local_energy_raw(self, bra, ket):
@@ -563,4 +610,3 @@ def solve_UHF(hamiltonian, init_wfn,
         prev_ene = curr_ene
     
     return curr_ene, ensure_ortho(wfn), converged
-
