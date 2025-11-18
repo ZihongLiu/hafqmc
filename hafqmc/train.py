@@ -10,6 +10,7 @@ from typing import NamedTuple
 
 from .molecule import build_mf
 from .hamiltonian import Hamiltonian, HamiltonianPW
+from .lattice import build_lattice_hamiltonian
 from .ansatz import Ansatz, BraKet
 from .estimator import make_eval_total
 from .sampler import make_sampler, make_multistep, make_batched, SamplerUnion
@@ -130,17 +131,22 @@ def train(cfg: ConfigDict):
 
     # set up the hamiltonian
     if cfg.restart.hamiltonian is None:
-        if "ueg" not in cfg:
+        lattice_cfg = cfg.lattice if "lattice" in cfg else None
+        if lattice_cfg is not None and len(lattice_cfg):
+            logger.info("Building lattice Hamiltonian")
+            hamiltonian = build_lattice_hamiltonian(lattice_cfg, cfg.hamiltonian)
+            print(f"# Non-interacting lattice energy: {hamiltonian.local_energy()}")
+        elif "ueg" in cfg:
+            logger.info("Using uniform electron gas Hamiltonian")
+            hamiltonian = HamiltonianPW.from_ueg(**cfg.ueg)
+            print(f"# HF energy for UEG hamiltonian: {hamiltonian.local_energy()}")
+        else:
             logger.info("Building molecule and doing HF calculation to get Hamiltonian")
             mf = build_mf(**cfg.molecule)
             print(f"# HF energy from pyscf calculation: {mf.e_tot}")
             if not mf.converged:
                 logger.warning("HF calculation does not converge!")
             hamiltonian = Hamiltonian.from_pyscf(mf, **cfg.hamiltonian)
-        else:
-            logger.info("Using uniform electron gas Hamiltonian")
-            hamiltonian = HamiltonianPW.from_ueg(**cfg.ueg)
-            print(f"# HF energy for UEG hamiltonian: {hamiltonian.local_energy()}")
         save_pickle(cfg.log.hamil_path, hamiltonian.to_tuple())
     else:
         logger.info("Loading Hamiltonian from saved file")
