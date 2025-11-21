@@ -40,30 +40,46 @@ def _align_rdm(rdm, nao):
     raise ValueError("unknown rdm type")
 
 
-def calc_e2b_hubbard(rdm, nao, onsite_u):
-    """Compute on-site Hubbard interaction U sum_i n_i,up n_i,dn using 1-RDM."""
-    _, blocks = _align_rdm(rdm, nao)
-    if blocks.ndim == 3:
-        r_up = blocks[0]
-        r_dn = blocks[-1]
-        mix_ud = mix_du = None
-    elif blocks.ndim == 4:
-        r_up = blocks[0,0]
-        r_dn = blocks[1,1]
-        mix_ud = blocks[0,1]
-        mix_du = blocks[1,0]
-    else:
-        raise ValueError("unsupported rdm structure for lattice Hubbard")
-    occ_up = jnp.diagonal(r_up, axis1=-2, axis2=-1).real
-    occ_dn = jnp.diagonal(r_dn, axis1=-2, axis2=-1).real
-    if mix_ud is None:
-        corr = jnp.zeros_like(occ_up)
-    else:
-        diag_ud = jnp.diagonal(mix_ud, axis1=-2, axis2=-1)
-        diag_du = jnp.diagonal(mix_du, axis1=-2, axis2=-1)
-        corr = (diag_ud * diag_du).real
-    docc = occ_up * occ_dn - corr
-    return onsite_u * docc.sum()
+#def calc_e2b_hubbard(rdm, nao, onsite_u):
+#    """Compute on-site Hubbard interaction U sum_i n_i,up n_i,dn using 1-RDM."""
+#    _, blocks = _align_rdm(rdm, nao)
+#    if blocks.ndim == 3:
+#        r_up = blocks[0]
+#        r_dn = blocks[-1]
+#        mix_ud = mix_du = None
+#    elif blocks.ndim == 4:
+#        r_up = blocks[0,0]
+#        r_dn = blocks[1,1]
+#        mix_ud = blocks[0,1]
+#        mix_du = blocks[1,0]
+#    else:
+#        raise ValueError("unsupported rdm structure for lattice Hubbard")
+#    occ_up = jnp.diagonal(r_up, axis1=-2, axis2=-1)
+#    occ_dn = jnp.diagonal(r_dn, axis1=-2, axis2=-1)
+#    if mix_ud is None:
+#        corr = jnp.zeros_like(occ_up)
+#    else:
+#        diag_ud = jnp.diagonal(mix_ud, axis1=-2, axis2=-1)
+#        diag_du = jnp.diagonal(mix_du, axis1=-2, axis2=-1)
+#        corr = (diag_ud * diag_du)
+#    docc = occ_up * occ_dn - corr
+#    return onsite_u * docc.sum()
+
+def calc_e2b_hubbard(rdm, nao, U_icf):
+    gd, gl = _align_rdm(rdm, nao)
+    # gl (2,nao,nao)
+    if gl.ndim == 3 and gl.shape[-1] == nao:
+        gl_0 = gl[0,:,:]
+        gl_1 = gl[1,:,:]
+        return U_icf * jnp.einsum("ii,ii", gl_0, gl_1)
+    # gl (2,2,nao,nao)
+    if gl.ndim == 4 and gl.shape[-1] == nao:
+        gl_00 = gl[0,0,:,:]
+        gl_10 = gl[1,0,:,:]
+        gl_01 = gl[0,1,:,:]
+        gl_11 = gl[1,1,:,:]
+        return U_icf * ( jnp.einsum("ii,ii", gl_00, gl_11) - jnp.einsum("ii,ii", gl_01, gl_10) )
+    raise ValueError("unknown gl type in calc_e2b_Hubbard")
    
     
 def calc_ovlp_ns(V, U):

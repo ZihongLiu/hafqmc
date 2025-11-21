@@ -1,11 +1,13 @@
+import os
 import sys
-sys.path.append("../..")
+#sys.path.append("../..")
+#sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+sys.path.append( "/home/bingxing2/home/scx6a1w/hafqmc" )
 
 from ml_collections import config_dict
 
 from hafqmc import train
 from hafqmc import config as hconfig
-
 
 def get_config():
     cfg = hconfig.example()
@@ -33,19 +35,23 @@ def get_config():
 
     cfg.optim.optimizer = "adabelief"
     cfg.optim.grad_clip = 1.0
-    cfg.optim.iteration = 1000
+    cfg.optim.iteration = 3000
     cfg.optim.lr.start = 3e-4
     cfg.optim.lr.delay = 5000
     cfg.optim.lr.decay = 1
+    #cfg.optim.lr.start = 1e-3
+    #cfg.optim.lr.delay = 3000
+    #cfg.optim.lr.decay = 0.9
 
-    cfg.sample.batch = 1000
-    cfg.sample.sampler = {"name": "hmc", "dt": 0.1, "length": 1.0}
+    cfg.sample.batch = 2000
+    #cfg.sample.sampler = {"name": "hmc", "dt": 0.1, "length": 1.0}
+    cfg.sample.sampler = {"name": "mcmc"}
     cfg.sample.burn_in = 100
 
     cfg.loss.sign_factor = 999.0
     cfg.loss.std_factor = 0.7
 
-    cfg.seed = 1
+    cfg.seed = 17
     cfg.log.level = "info"
 
     return cfg
