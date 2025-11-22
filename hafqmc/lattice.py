@@ -75,6 +75,7 @@ class ChargeChannelHubbard2D:
     ty_dn: float
     nelec: int
     onsite_u: float
+    bond_J: float = 0.0
     mu: float = 0.0
     periodic: bool = True
     spin_counts: Optional[Tuple[int, int]] = None
@@ -86,6 +87,8 @@ class ChargeChannelHubbard2D:
         self.nbasis = 2 * self.lattice.n_sites
         if self.nelec > self.nbasis:
             raise ValueError("Number of electrons exceeds available orbitals")
+        self._bonds = self._build_bonds()
+        self._bond_ops = self._build_bond_ops()
 
     def _basis_index(self, site: int, spin: int) -> int:
         # spin: 0 for up block, 1 for down block
@@ -123,6 +126,47 @@ class ChargeChannelHubbard2D:
         eye = onp.eye(self.nbasis, dtype=onp.float64)
         return coeff * diag_mask[..., None] * eye
 
+    def _build_bonds(self):
+        bonds = []
+        for site in range(self.lattice.n_sites):
+            for axis in range(2):
+                neighbor = self.lattice.neighbor(site, axis, 1)
+                if neighbor is None:
+                    continue
+                if neighbor < site:
+                    continue
+                bonds.append((site, neighbor))
+        return bonds
+
+    def _bond_orbital_pairs(self):
+        if not getattr(self, "_bonds", None):
+            return None
+        pairs = []
+        for site_i, site_j in self._bonds:
+            pairs.append((self._basis_index(site_i, 0), self._basis_index(site_j, 0)))
+            pairs.append((self._basis_index(site_i, 1), self._basis_index(site_j, 1)))
+        return onp.array(pairs, dtype=onp.int32) if pairs else None
+
+    def _build_bond_ops(self):
+        if self.bond_J == 0.0:
+            return None
+        if not getattr(self, "_bonds", None):
+            self._bonds = self._build_bonds()
+        if not self._bonds:
+            return None
+        coeff = onp.sqrt(abs(self.bond_J))
+        phase = 1.0
+        mats = []
+        for site_i, site_j in self._bonds:
+            mat = onp.zeros((self.nbasis, self.nbasis), dtype=onp.float64)
+            for spin in (0, 1):
+                oi = self._basis_index(site_i, spin)
+                oj = self._basis_index(site_j, spin)
+                mat[oi, oj] = 1.0
+                mat[oj, oi] = 1.0
+            mats.append(phase * coeff * mat)
+        return onp.stack(mats, axis=0)
+
     def build_reference_wfn(self, h1e: Optional[NumpyArray] = None) -> NumpyArray:
         if h1e is None:
             h1e = self.build_one_body()
@@ -147,6 +191,7 @@ class ChargeChannelHubbard2D:
         h1e = self.build_one_body()
         ceri = self.build_charge_cholesky()
         wfn0 = self.build_reference_wfn(h1e)
+        bonds = self._bond_orbital_pairs()
         aux = {
             "lattice": {
                 "dims": self.dims,
@@ -161,8 +206,12 @@ class ChargeChannelHubbard2D:
             "lattice_hubbard": {
                 "U": float(self.onsite_u),
                 "nsite": int(self.lattice.n_sites),
+                "bond_J": float(self.bond_J),
+                "bonds": bonds,
             },
         }
+        if self._bond_ops is not None:
+            aux["bond_ops"] = jnp.asarray(self._bond_ops)
         return Hamiltonian(
             h1e=jnp.asarray(h1e),
             ceri=jnp.asarray(ceri),
@@ -203,6 +252,7 @@ def build_lattice_hamiltonian(lattice_cfg, interaction_cfg=None) -> Hamiltonian:
         ty_dn=float(ty_dn),
         nelec=int(nelec_total),
         onsite_u=float(onsite_u),
+        bond_J=float(_cfg_value(interaction_cfg, "bond_J", 0.0)),
         mu=float(mu),
         periodic=periodic,
         spin_counts=spin_counts,

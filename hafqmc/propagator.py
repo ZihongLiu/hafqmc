@@ -27,6 +27,7 @@ class Propagator(nn.Module):
     sqrt_tsvpar: bool = False
     dyn_mfshift: bool = False
     priori_mask: Optional[ndarray] = None
+    extra_vhs_op: Optional[nn.Module] = None
 
     @nn.nowrap
     @classmethod
@@ -52,6 +53,7 @@ class Propagator(nn.Module):
             hermite_ops: bool = False,
             mf_subtract: bool = False, 
             spin_mixing: Union[bool, float, complex] = False, 
+            extra_vhs: Optional[Union[str, ndarray]] = None,
             **init_kwargs):
         # prepare data
         twfn = hamiltonian.wfn0
@@ -69,6 +71,10 @@ class Propagator(nn.Module):
         _pd = parse_bool(("hmf", "vhs", "tsteps"), parametrize)
         _ifcplx = lambda t: _t_cplx if t else _t_real
         _cd = parse_bool(("hmf", "vhs", "tsteps"), use_complex)
+        extra_mats = None
+        base_n = init_vhs.shape[0]
+        if jnp.iscomplexobj(init_vhs):
+            _cd["vhs"] = True
         # make one body operator
         hmf_op = OneBody(
             init_hmf, 
@@ -93,11 +99,28 @@ class Propagator(nn.Module):
             dtype=_ifcplx(_cd["vhs"]),
             expm_option=expm_option,
             **network_args)
+        extra_vhs_op = None
+        if extra_vhs is not None:
+            if isinstance(extra_vhs, str):
+                extra_mats = hamiltonian.aux.get(extra_vhs)
+            else:
+                extra_mats = extra_vhs
+            if extra_mats is None:
+                raise ValueError(f"extra_vhs '{extra_vhs}' not found in hamiltonian aux")
+            extra_vhs_op = AuxField(
+                jnp.asarray(extra_mats),
+                trial_wfn=mfwfn,
+                parametrize=_pd["vhs"],
+                init_random=init_random,
+                hermite_out=hermite_ops,
+                dtype=_t_real,
+                expm_option=expm_option)
         # build propagator
         return cls(hmf_op, vhs_op, 
             init_tsteps=init_tsteps, 
             para_tsteps=_pd["tsteps"], 
             cplx_tsteps=_cd["tsteps"], 
+            extra_vhs_op=extra_vhs_op,
             **init_kwargs)
 
     @nn.nowrap
@@ -195,6 +218,8 @@ class Propagator(nn.Module):
     def fields_shape(self):
         nts = len(self.init_tsteps)
         nfield = self.vhs_op.nfield
+        if self.extra_vhs_op is not None:
+            nfield += self.extra_vhs_op.nfield
         return onp.array((nts, nfield))
 
     def setup(self):
@@ -210,6 +235,8 @@ class Propagator(nn.Module):
                      if self.para_tsteps else _ts_h)
         self.nts_h = self.ts_h.shape[0]
         self.nts_v = self.ts_v.shape[0]
+        self.base_nfield = self.vhs_op.nfield
+        self.extra_nfield = self.extra_vhs_op.nfield if self.extra_vhs_op is not None else 0
         # operator prioir masks
         if self.priori_mask is None:
             self.hmask = self.vmask = 1
@@ -227,6 +254,12 @@ class Propagator(nn.Module):
         _vop = self.vhs_op.clone()
         self.vhs_ops = [_vop.clone() if _vd["vhs"] else _vop 
                         for _ in range(self.nts_v)]
+        if self.extra_vhs_op is not None:
+            _evop = self.extra_vhs_op.clone()
+            self.extra_vhs_ops = [_evop.clone() if _vd["vhs"] else _evop
+                                  for _ in range(self.nts_v)]
+        else:
+            self.extra_vhs_ops = None
 
     def __call__(self, wfn, fields):
         if _has_spin(wfn) and wfn[0].shape[0] < self.hmf_op.nbasis:
@@ -235,17 +268,32 @@ class Propagator(nn.Module):
         log_weight = 0. # + 0.5 * self.nts_v * self.nsite
         # get prop times
         _ts_h = -self.ts_h # the negation of t goes to here
-        _ts_v = 1j * self.ts_v if self.sqrt_tsvpar else jnp.sqrt(-self.ts_v+0j)
         # step functions in iterative prop
         def app_h(wfn, ii):
             hop = self.hmf_ops[ii]
             hmf = hop(_ts_h[ii])
             return hop.expm_apply(hmf * self.hmask, wfn), 0.
         def app_v(wfn, ii):
-            vop = self.vhs_ops[ii]
             cwfn = unpack_spin(wfn, nelec) if self.dyn_mfshift else None
-            vhs, lw = vop(_ts_v[ii], fields[ii], curr_wfn=cwfn)
-            return vop.expm_apply(vhs * self.vmask, wfn), lw
+            ts_val = self.ts_v[ii]
+            if self.sqrt_tsvpar:
+                base_step = 1j * ts_val
+                extra_step = ts_val
+            else:
+                base_step = jnp.sqrt(-ts_val + 0j)
+                extra_step = jnp.sqrt(ts_val + 0j)
+            base_fields = fields[ii][:self.base_nfield]
+            vop = self.vhs_ops[ii]
+            vhs, lw = vop(base_step, base_fields, curr_wfn=cwfn)
+            wfn = vop.expm_apply(vhs * self.vmask, wfn)
+            logw = lw
+            if self.extra_vhs_ops is not None and self.extra_nfield > 0:
+                extra_fields = fields[ii][self.base_nfield:]
+                evop = self.extra_vhs_ops[ii]
+                evhs, elw = evop(extra_step, extra_fields, curr_wfn=cwfn)
+                wfn = evop.expm_apply(evhs * self.vmask, wfn)
+                logw += elw
+            return wfn, logw
         def nmlz(wfn, ii):
             if self.ortho_intvl == 0:
                 return normalize(wfn)
