@@ -111,6 +111,7 @@ def default() -> ConfigDict:
                 "decay": 1.0,
             },
             "baseline": None, #{"decay": 0.99},
+            "sr": None,
         },
         "log": {
             "stat_freq": 1,

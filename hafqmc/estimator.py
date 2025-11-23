@@ -165,3 +165,19 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet,
             
     return eval_total
 
+
+def make_logder_fn(braket: BraKet):
+    """Create a function that returns log amplitude and its parameter gradient."""
+
+    def log_amp(params, fields):
+        _, logov = braket.apply(params, fields, method=braket.sign_logov)
+        return logov
+
+    return jax.value_and_grad(log_amp)
+
+
+def make_logder_batch_fn(braket: BraKet):
+    """Vectorized version of log-derivative calculator across field samples."""
+    single_fn = make_logder_fn(braket)
+    batch_fn = jax.vmap(single_fn, in_axes=(None, 0))
+    return batch_fn

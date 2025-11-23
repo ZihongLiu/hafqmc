@@ -3,6 +3,9 @@ import logging
 import jax 
 import optax
 from jax import numpy as jnp
+from jax.tree_util import tree_reduce
+from jax.scipy.sparse.linalg import cg
+from jax.flatten_util import ravel_pytree
 from optax._src import alias as optax_alias
 from ml_collections import ConfigDict
 from tensorboardX import SummaryWriter
@@ -12,7 +15,7 @@ from .molecule import build_mf
 from .hamiltonian import Hamiltonian, HamiltonianPW
 from .lattice import build_lattice_hamiltonian
 from .ansatz import Ansatz, BraKet
-from .estimator import make_eval_total
+from .estimator import make_eval_total, make_logder_batch_fn
 from .sampler import make_sampler, make_multistep, make_batched, SamplerUnion
 from .utils import ensure_mapping, save_pickle, load_pickle, Printer, cfg_to_yaml
 from .utils import make_moving_avg, PyTree, tree_map
@@ -63,22 +66,99 @@ class TrainingState(NamedTuple):
     mc_state: PyTree
     opt_state: PyTree
     est_state: PyTree = None
+    sr_state: PyTree = None
 
 
-def make_training_step(loss_and_grad, mc_sampler, optimizer, accumulator=None):
+def _flatten_fields(fields):
+    return tree_map(lambda x: x.reshape((-1, *x.shape[2:])), fields)
+
+def tree_add(a, b):
+    return tree_map(lambda x, y: x + y, a, b)
+
+def tree_scale(tree, scalar):
+    return tree_map(lambda x: scalar * x, tree)
+
+def tree_conj(tree):
+    return tree_map(jnp.conj, tree)
+
+
+def tree_zip_flatten(tree):
+    flat, unravel = ravel_pytree(tree)
+    return flat, unravel
+
+def tree_unflatten(flat, unravel):
+    return unravel(flat)
+
+
+def fisher_vector_product(centered_grads, vec, damping):
+    def single_inner(sample_grad):
+        return tree_reduce(lambda acc, x: acc + x,
+                           tree_map(lambda x, y: jnp.vdot(x, y), sample_grad, vec),
+                           0.0)
+
+    coeffs = jax.vmap(single_inner)(centered_grads)
+    batch = coeffs.shape[0]
+
+    def apply_weight(grads):
+        return jnp.tensordot(coeffs, grads, axes=(0, 0)) / batch
+
+    product = tree_map(apply_weight, centered_grads)
+    return tree_add(product, tree_scale(vec, damping))
+
+
+def make_training_step(loss_and_grad, mc_sampler, optimizer,
+                       accumulator=None, logder_fn=None, sr_config=None):
     is_union = isinstance(mc_sampler, SamplerUnion)
 
     def step(key, train_state, sample_flag=None):
-        ii, params, mc_state, opt_state, ebar = train_state
+        ii, params, mc_state, opt_state, ebar, _ = train_state
         sampler = mc_sampler.switch(sample_flag) if is_union else mc_sampler
         mc_state = sampler.refresh(mc_state, params)
         mc_state, data = sampler.sample(key, params, mc_state)
+        logder_stats = None
+        logder_batch = None
+        if logder_fn is not None:
+            fields_raw = data[0] if isinstance(data, tuple) else data
+            flat_fields = _flatten_fields(fields_raw)
+            log_amp, log_grads = logder_fn(params, flat_fields)
+            leaves = jax.tree_util.tree_leaves(log_grads)
+            grad_norm_sq = sum(
+                jnp.sum(jnp.abs(g.reshape(g.shape[0], -1)) ** 2, axis=1)
+                for g in leaves)
+            grad_norm = jnp.sqrt(grad_norm_sq)
+            logder_stats = {
+                "log_amp_mean": jnp.mean(log_amp.real),
+                "log_amp_std": jnp.std(log_amp.real),
+                "log_grad_mean_norm": jnp.mean(grad_norm),
+            }
+            logder_batch = log_grads
         (loss, aux), grads = loss_and_grad(params, data, ebar)
-        grads = tree_map(jnp.conj, grads) # for complex parameters
-        updates, opt_state = optimizer.update(grads, opt_state, params)
-        params = optax.apply_updates(params, updates)
+        if sr_config is not None and logder_batch is not None:
+            grads = tree_conj(grads)
+            mean_grad = tree_map(lambda x: jnp.mean(x, axis=0, keepdims=True), logder_batch)
+            centered = tree_map(lambda x, m: x - m, logder_batch, mean_grad)
+            rhs = tree_scale(grads, -1.0)
+            vec0, unravel = tree_zip_flatten(rhs)
+
+            def fvp_flat(v_flat):
+                vec_tree = tree_unflatten(v_flat, unravel)
+                prod = fisher_vector_product(centered, vec_tree, sr_config["damping"])
+                flat_prod, _ = tree_zip_flatten(prod)
+                return flat_prod
+
+            delta_flat, info = cg(fvp_flat, vec0,
+                                  maxiter=sr_config["maxiter"],
+                                  tol=sr_config["tol"])
+            delta = tree_unflatten(delta_flat, unravel)
+            params = tree_add(params, tree_scale(delta, sr_config["step_size"]))
+        else:
+            grads = tree_conj(grads)
+            updates, opt_state = optimizer.update(grads, opt_state, params)
+            params = optax.apply_updates(params, updates)
+        if logder_stats is not None:
+            aux.update(logder_stats)
         if accumulator is not None: ebar = accumulator(ebar, aux["e_tot"], ii)
-        new_state = TrainingState(ii+1, params, mc_state, opt_state, ebar)
+        new_state = TrainingState(ii+1, params, mc_state, opt_state, ebar, None)
         return new_state, (loss, aux)
 
     return step
@@ -175,18 +255,31 @@ def train(cfg: ConfigDict):
     sampler_1s_nc = make_batched(sampler_1s_1c, sample_batch, concat=False)
     mc_sampler = make_multistep(sampler_1s_nc, sample_step, concat=True)
     lr_schedule = make_lr_schedule(**cfg.optim.lr)
-    optimizer = make_optimizer(lr_schedule=lr_schedule, grad_clip=cfg.optim.grad_clip,
+    sr_config = None
+    if "sr" in cfg.optim and cfg.optim.sr is not None:
+        sr_cfg = cfg.optim.sr
+        sr_config = {
+            "damping": float(sr_cfg.get("damping", 1e-3)),
+            "maxiter": int(sr_cfg.get("maxiter", 10)),
+            "tol": float(sr_cfg.get("tol", 1e-6)),
+            "step_size": float(sr_cfg.get("step_size", 1.0)),
+        }
+    optimizer = (make_optimizer(lr_schedule=lr_schedule, grad_clip=cfg.optim.grad_clip,
         **ensure_mapping(cfg.optim.optimizer, default_key="name"))
+        if sr_config is None else None)
     expect_fn = make_eval_total(hamiltonian, braket, 
         default_batch=eval_batch, calc_stds=True)
     loss_fn = make_loss(expect_fn, **cfg.loss)
     loss_and_grad = jax.value_and_grad(loss_fn, has_aux=True)
     moving_avg_fn = (make_moving_avg(**cfg.optim.baseline)
         if cfg.optim.baseline is not None else None)
+    collect_logder = sr_config is not None or getattr(cfg.optim, "collect_logder", False)
+    logder_fn = make_logder_batch_fn(braket) if collect_logder else None
 
     # the core training iteration, to be pmaped
     if cfg.optim.lr.start > 0:
-        train_step = make_training_step(loss_and_grad, mc_sampler, optimizer, moving_avg_fn)
+        train_step = make_training_step(loss_and_grad, mc_sampler, optimizer,
+                                        moving_avg_fn, logder_fn, sr_config)
     else:
         train_step = make_evaluation_step(expect_fn, mc_sampler)
     train_step = jax.jit(train_step, static_argnames="sample_flag")
@@ -205,7 +298,7 @@ def train(cfg: ConfigDict):
             if isinstance(params, tuple): params = params[1]
             if isinstance(params, tuple): params = params[1]
         mc_state = mc_sampler.init(mckey, params)
-        opt_state = optimizer.init(params)
+        opt_state = optimizer.init(params) if optimizer is not None else None
         if cfg.sample.burn_in > 0:
             logger.info(f"Burning in the sampler for {cfg.sample.burn_in} steps")
             key, subkey = jax.random.split(key)
