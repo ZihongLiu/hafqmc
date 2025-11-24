@@ -69,6 +69,23 @@ class TrainingState(NamedTuple):
     sr_state: PyTree = None
 
 
+class DummyOptCount(NamedTuple):
+    count: jnp.ndarray
+
+
+def make_dummy_opt_state(count):
+    """Create a placeholder opt_state that only tracks iteration count."""
+    cnt = jnp.asarray(count, dtype=jnp.int32)
+    return ((DummyOptCount(count=cnt),),)
+
+
+def bump_dummy_opt_state(opt_state):
+    """Increase the dummy count by one (used when running SR without optax)."""
+    cur = opt_state[-1][0].count
+    nxt = cur + jnp.asarray(1, dtype=cur.dtype)
+    return ((DummyOptCount(count=nxt),),)
+
+
 def _flatten_fields(fields):
     return tree_map(lambda x: x.reshape((-1, *x.shape[2:])), fields)
 
@@ -133,7 +150,9 @@ def make_training_step(loss_and_grad, mc_sampler, optimizer,
             }
             logder_batch = log_grads
         (loss, aux), grads = loss_and_grad(params, data, ebar)
-        if sr_config is not None and logder_batch is not None:
+        if optimizer is None:
+            if logder_batch is None:
+                raise ValueError("SR optimization requires log-derivative statistics")
             grads = tree_conj(grads)
             mean_grad = tree_map(lambda x: jnp.mean(x, axis=0, keepdims=True), logder_batch)
             centered = tree_map(lambda x, m: x - m, logder_batch, mean_grad)
@@ -151,6 +170,7 @@ def make_training_step(loss_and_grad, mc_sampler, optimizer,
                                   tol=sr_config["tol"])
             delta = tree_unflatten(delta_flat, unravel)
             params = tree_add(params, tree_scale(delta, sr_config["step_size"]))
+            opt_state = bump_dummy_opt_state(opt_state)
         else:
             grads = tree_conj(grads)
             updates, opt_state = optimizer.update(grads, opt_state, params)
@@ -185,12 +205,6 @@ def train(cfg: ConfigDict):
     log_level = getattr(logging, cfg.log.level.upper())
     logger.setLevel(log_level)
     writer = SummaryWriter(cfg.log.stat_path)
-    print_fields = {"step": "", "loss": ".4f", "e_tot": ".4f", 
-                    "exp_es": ".4f", "exp_s": ".4f"}
-    if cfg.loss.std_factor >= 0:
-        print_fields.update({"std_es": ".4f", "std_s": ".4f"})
-    print_fields["lr"] = ".1e"
-    printer = Printer(print_fields, time_format=".4f")
     if cfg.log.hpar_path:
         with open(cfg.log.hpar_path, "w") as hpfile:
             print(cfg_to_yaml(cfg), file=hpfile)
@@ -275,6 +289,18 @@ def train(cfg: ConfigDict):
         if cfg.optim.baseline is not None else None)
     collect_logder = sr_config is not None or getattr(cfg.optim, "collect_logder", False)
     logder_fn = make_logder_batch_fn(braket) if collect_logder else None
+    print_fields = {"step": "", "loss": ".4f", "e_tot": ".4f", 
+                    "exp_es": ".4f", "exp_s": ".4f"}
+    if cfg.loss.std_factor >= 0:
+        print_fields.update({"std_es": ".4f", "std_s": ".4f"})
+    if collect_logder:
+        print_fields.update({
+            "log_amp_mean": ".4f",
+            "log_amp_std": ".4f",
+            "log_grad_mean_norm": ".4f",
+        })
+    print_fields["lr"] = ".1e"
+    printer = Printer(print_fields, time_format=".4f")
 
     # the core training iteration, to be pmaped
     if cfg.optim.lr.start > 0:
@@ -298,7 +324,10 @@ def train(cfg: ConfigDict):
             if isinstance(params, tuple): params = params[1]
             if isinstance(params, tuple): params = params[1]
         mc_state = mc_sampler.init(mckey, params)
-        opt_state = optimizer.init(params) if optimizer is not None else None
+        if optimizer is not None:
+            opt_state = optimizer.init(params)
+        else:
+            opt_state = make_dummy_opt_state(0)
         if cfg.sample.burn_in > 0:
             logger.info(f"Burning in the sampler for {cfg.sample.burn_in} steps")
             key, subkey = jax.random.split(key)
@@ -312,6 +341,13 @@ def train(cfg: ConfigDict):
         if len(rest) < 5 and cfg.optim.baseline is not None:
             rest = (*rest, hamiltonian.local_energy())
         train_state = TrainingState(*rest)
+        if optimizer is None:
+            opt_state = train_state.opt_state
+            if opt_state is None:
+                opt_state = make_dummy_opt_state(train_state.step)
+            train_state = TrainingState(train_state.step, train_state.params,
+                                        train_state.mc_state, opt_state,
+                                        train_state.est_state, train_state.sr_state)
 
     # the actual training iteration
     logger.info("Start training")
@@ -329,6 +365,9 @@ def train(cfg: ConfigDict):
         # logging anc checkpointing
         if ii % cfg.log.stat_freq == 0:
             if sflag is not None: aux["nprop"] = sflag
+            if collect_logder:
+                for stat_key in ("log_amp_mean", "log_amp_std", "log_grad_mean_norm"):
+                    aux.setdefault(stat_key, float("nan"))
             _lr = (lr_schedule(train_state.opt_state[-1][0].count) 
                 if callable(lr_schedule) else lr_schedule)
             printer.print_fields({"step": ii, "loss": loss, **aux, "lr": _lr})
