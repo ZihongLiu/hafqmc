@@ -111,7 +111,7 @@ def default() -> ConfigDict:
                 "decay": 1.0,
             },
             "baseline": None, #{"decay": 0.99},
-            "sr": None,
+            "natgrad": None,
         },
         "log": {
             "stat_freq": 1,
@@ -121,7 +121,7 @@ def default() -> ConfigDict:
             "hpar_path": "hparams.yml",
             "hamil_path": "hamiltonian.pkl",
             "level": "WARNING",
-        }
+        },
     }, 
     type_safe=False, convert_dict=True)
 

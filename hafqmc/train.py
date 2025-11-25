@@ -3,9 +3,6 @@ import logging
 import jax 
 import optax
 from jax import numpy as jnp
-from jax.tree_util import tree_reduce
-from jax.scipy.sparse.linalg import cg
-from jax.flatten_util import ravel_pytree
 from optax._src import alias as optax_alias
 from ml_collections import ConfigDict
 from tensorboardX import SummaryWriter
@@ -15,10 +12,18 @@ from .molecule import build_mf
 from .hamiltonian import Hamiltonian, HamiltonianPW
 from .lattice import build_lattice_hamiltonian
 from .ansatz import Ansatz, BraKet
-from .estimator import make_eval_total, make_logder_batch_fn
+from .estimator import make_eval_total
 from .sampler import make_sampler, make_multistep, make_batched, SamplerUnion
 from .utils import ensure_mapping, save_pickle, load_pickle, Printer, cfg_to_yaml
 from .utils import make_moving_avg, PyTree, tree_map
+from .fisher import fisher_vector_product, fisher_diag, cg_solve
+
+
+class _NullWriter:
+    def add_scalars(self, *args, **kwargs):
+        return None
+    def close(self):
+        return None
 
 
 def lower_penalty(s, factor=1., target=1., power=2.):
@@ -28,12 +33,29 @@ def upper_penalty(s, factor=1., target=1., power=2.):
     return factor * jnp.maximum(s - target, 0) ** power
 
 
-def make_optimizer(name, lr_schedule, grad_clip=None, **kwargs):
-    opt_fn = getattr(optax_alias, name)
+def make_optimizer(name, lr_schedule, grad_clip=None, natgrad_cfg=None, **kwargs):
+    natcfg = None
+    base_name = name
+    if natgrad_cfg is not None:
+        natcfg = {"damping": 1e-3, "approx": "cg",
+                  "fallback_to_grad": True, "cg": {"maxiter": 10, "tol": 1e-6},
+                  "update_mode": "base"}  # base | plain
+        for k, v in natgrad_cfg.items():
+            if k == "cg":
+                natcfg["cg"].update(v)
+            else:
+                natcfg[k] = v
+    if name.lower() in ("natural_grad", "natgrad"):
+        base_name = kwargs.pop("base", "adam")
+        if natcfg is None:
+            natcfg = {"damping": 1e-3, "approx": "cg",
+                      "fallback_to_grad": True, "cg": {"maxiter": 10, "tol": 1e-6},
+                      "update_mode": "base"}
+    opt_fn = getattr(optax_alias, base_name)
     opt = opt_fn(lr_schedule, **kwargs)
     if grad_clip is not None:
         opt = optax.chain(optax.clip(grad_clip), opt)
-    return opt
+    return opt, natcfg
 
 
 def make_lr_schedule(start=1e-4, decay=1., delay=1e4):
@@ -66,119 +88,53 @@ class TrainingState(NamedTuple):
     mc_state: PyTree
     opt_state: PyTree
     est_state: PyTree = None
-    sr_state: PyTree = None
 
 
-class DummyOptCount(NamedTuple):
-    count: jnp.ndarray
+def _apply_natgrad(grads, score, cfg):
+    if score is None:
+        return grads
+    damping = cfg.get("damping", 0.0)
+    approx = cfg.get("approx", "cg")
+    score = tree_map(jnp.conj, score)
+    if approx == "diag":
+        diag = fisher_diag(score, grads)
+        return tree_map(lambda g, d: g / (d + damping), grads, diag)
+    cg_kw = cfg.get("cg", {})
+    mv = lambda v: fisher_vector_product(score, v, damping=damping)
+    nat_g, info = cg_solve(mv, grads, 
+        maxiter=cg_kw.get("maxiter", 10), tol=cg_kw.get("tol", 1e-6))
+    if info != 0 and cfg.get("fallback_to_grad", True):
+        return grads
+    return nat_g
 
 
-def make_dummy_opt_state(count):
-    """Create a placeholder opt_state that only tracks iteration count."""
-    cnt = jnp.asarray(count, dtype=jnp.int32)
-    return ((DummyOptCount(count=cnt),),)
-
-
-def bump_dummy_opt_state(opt_state):
-    """Increase the dummy count by one (used when running SR without optax)."""
-    cur = opt_state[-1][0].count
-    nxt = cur + jnp.asarray(1, dtype=cur.dtype)
-    return ((DummyOptCount(count=nxt),),)
-
-
-def _flatten_fields(fields):
-    return tree_map(lambda x: x.reshape((-1, *x.shape[2:])), fields)
-
-def tree_add(a, b):
-    return tree_map(lambda x, y: x + y, a, b)
-
-def tree_scale(tree, scalar):
-    return tree_map(lambda x: scalar * x, tree)
-
-def tree_conj(tree):
-    return tree_map(jnp.conj, tree)
-
-
-def tree_zip_flatten(tree):
-    flat, unravel = ravel_pytree(tree)
-    return flat, unravel
-
-def tree_unflatten(flat, unravel):
-    return unravel(flat)
-
-
-def fisher_vector_product(centered_grads, vec, damping):
-    def single_inner(sample_grad):
-        return tree_reduce(lambda acc, x: acc + x,
-                           tree_map(lambda x, y: jnp.vdot(x, y), sample_grad, vec),
-                           0.0)
-
-    coeffs = jax.vmap(single_inner)(centered_grads)
-    batch = coeffs.shape[0]
-
-    def apply_weight(grads):
-        return jnp.tensordot(coeffs, grads, axes=(0, 0)) / batch
-
-    product = tree_map(apply_weight, centered_grads)
-    return tree_add(product, tree_scale(vec, damping))
-
-
-def make_training_step(loss_and_grad, mc_sampler, optimizer,
-                       accumulator=None, logder_fn=None, sr_config=None):
+def make_training_step(loss_and_grad, mc_sampler, optimizer, accumulator=None, natcfg=None):
     is_union = isinstance(mc_sampler, SamplerUnion)
 
     def step(key, train_state, sample_flag=None):
-        ii, params, mc_state, opt_state, ebar, _ = train_state
+        ii, params, mc_state, opt_state, ebar = train_state
         sampler = mc_sampler.switch(sample_flag) if is_union else mc_sampler
         mc_state = sampler.refresh(mc_state, params)
         mc_state, data = sampler.sample(key, params, mc_state)
-        logder_stats = None
-        logder_batch = None
-        if logder_fn is not None:
-            fields_raw = data[0] if isinstance(data, tuple) else data
-            flat_fields = _flatten_fields(fields_raw)
-            log_amp, log_grads = logder_fn(params, flat_fields)
-            leaves = jax.tree_util.tree_leaves(log_grads)
-            grad_norm_sq = sum(
-                jnp.sum(jnp.abs(g.reshape(g.shape[0], -1)) ** 2, axis=1)
-                for g in leaves)
-            grad_norm = jnp.sqrt(grad_norm_sq)
-            logder_stats = {
-                "log_amp_mean": jnp.mean(log_amp.real),
-                "log_amp_std": jnp.std(log_amp.real),
-                "log_grad_mean_norm": jnp.mean(grad_norm),
-            }
-            logder_batch = log_grads
         (loss, aux), grads = loss_and_grad(params, data, ebar)
-        if optimizer is None:
-            if logder_batch is None:
-                raise ValueError("SR optimization requires log-derivative statistics")
-            grads = tree_conj(grads)
-            mean_grad = tree_map(lambda x: jnp.mean(x, axis=0, keepdims=True), logder_batch)
-            centered = tree_map(lambda x, m: x - m, logder_batch, mean_grad)
-            rhs = tree_scale(grads, -1.0)
-            vec0, unravel = tree_zip_flatten(rhs)
-
-            def fvp_flat(v_flat):
-                vec_tree = tree_unflatten(v_flat, unravel)
-                prod = fisher_vector_product(centered, vec_tree, sr_config["damping"])
-                flat_prod, _ = tree_zip_flatten(prod)
-                return flat_prod
-
-            delta_flat, info = cg(fvp_flat, vec0,
-                                  maxiter=sr_config["maxiter"],
-                                  tol=sr_config["tol"])
-            delta = tree_unflatten(delta_flat, unravel)
-            params = tree_add(params, tree_scale(delta, sr_config["step_size"]))
-            opt_state = bump_dummy_opt_state(opt_state)
+        if natcfg is not None and getattr(sampler, "compute_score", None) is not None:
+            score = sampler.compute_score(params, mc_state)
+            if score is not None:
+                grads = _apply_natgrad(grads, score, natcfg)
+        grads = tree_map(jnp.conj, grads) # for complex parameters
+        if natcfg is not None and natcfg.get("update_mode", "base") == "plain":
+            lr = (optimizer if callable(optimizer) else None)
+            if callable(lr):
+                lr_val = lr(train_state.opt_state[-1][0].count) if hasattr(train_state.opt_state, "__len__") else lr(0)
+            else:
+                lr_val = 1.0
+            params = tree_map(lambda p, g: p - lr_val * g, params, grads)
+            updates = opt_state
         else:
-            grads = tree_conj(grads)
             updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
-        if logder_stats is not None:
-            aux.update(logder_stats)
         if accumulator is not None: ebar = accumulator(ebar, aux["e_tot"], ii)
-        new_state = TrainingState(ii+1, params, mc_state, opt_state, ebar, None)
+        new_state = TrainingState(ii+1, params, mc_state, opt_state, ebar)
         return new_state, (loss, aux)
 
     return step
@@ -204,7 +160,17 @@ def train(cfg: ConfigDict):
     logger = logging.getLogger("train")
     log_level = getattr(logging, cfg.log.level.upper())
     logger.setLevel(log_level)
-    writer = SummaryWriter(cfg.log.stat_path)
+    try:
+        writer = SummaryWriter(cfg.log.stat_path) if cfg.log.stat_path else _NullWriter()
+    except PermissionError:
+        logger.warning("SummaryWriter disabled due to permission error at %s", cfg.log.stat_path)
+        writer = _NullWriter()
+    print_fields = {"step": "", "loss": ".4f", "e_tot": ".4f", 
+                    "exp_es": ".4f", "exp_s": ".4f"}
+    if cfg.loss.std_factor >= 0:
+        print_fields.update({"std_es": ".4f", "std_s": ".4f"})
+    print_fields["lr"] = ".1e"
+    printer = Printer(print_fields, time_format=".4f")
     if cfg.log.hpar_path:
         with open(cfg.log.hpar_path, "w") as hpfile:
             print(cfg_to_yaml(cfg), file=hpfile)
@@ -269,43 +235,20 @@ def train(cfg: ConfigDict):
     sampler_1s_nc = make_batched(sampler_1s_1c, sample_batch, concat=False)
     mc_sampler = make_multistep(sampler_1s_nc, sample_step, concat=True)
     lr_schedule = make_lr_schedule(**cfg.optim.lr)
-    sr_config = None
-    if "sr" in cfg.optim and cfg.optim.sr is not None:
-        sr_cfg = cfg.optim.sr
-        sr_config = {
-            "damping": float(sr_cfg.get("damping", 1e-3)),
-            "maxiter": int(sr_cfg.get("maxiter", 10)),
-            "tol": float(sr_cfg.get("tol", 1e-6)),
-            "step_size": float(sr_cfg.get("step_size", 1.0)),
-        }
-    optimizer = (make_optimizer(lr_schedule=lr_schedule, grad_clip=cfg.optim.grad_clip,
+    optimizer, natcfg = make_optimizer(
+        natgrad_cfg=cfg.optim.natgrad,
+        lr_schedule=lr_schedule, grad_clip=cfg.optim.grad_clip,
         **ensure_mapping(cfg.optim.optimizer, default_key="name"))
-        if sr_config is None else None)
     expect_fn = make_eval_total(hamiltonian, braket, 
         default_batch=eval_batch, calc_stds=True)
     loss_fn = make_loss(expect_fn, **cfg.loss)
     loss_and_grad = jax.value_and_grad(loss_fn, has_aux=True)
     moving_avg_fn = (make_moving_avg(**cfg.optim.baseline)
         if cfg.optim.baseline is not None else None)
-    collect_logder = sr_config is not None or getattr(cfg.optim, "collect_logder", False)
-    logder_fn = make_logder_batch_fn(braket) if collect_logder else None
-    print_fields = {"step": "", "loss": ".4f", "e_tot": ".4f", 
-                    "exp_es": ".4f", "exp_s": ".4f"}
-    if cfg.loss.std_factor >= 0:
-        print_fields.update({"std_es": ".4f", "std_s": ".4f"})
-    if collect_logder:
-        print_fields.update({
-            "log_amp_mean": ".4f",
-            "log_amp_std": ".4f",
-            "log_grad_mean_norm": ".4f",
-        })
-    print_fields["lr"] = ".1e"
-    printer = Printer(print_fields, time_format=".4f")
 
     # the core training iteration, to be pmaped
     if cfg.optim.lr.start > 0:
-        train_step = make_training_step(loss_and_grad, mc_sampler, optimizer,
-                                        moving_avg_fn, logder_fn, sr_config)
+        train_step = make_training_step(loss_and_grad, mc_sampler, optimizer, moving_avg_fn, natcfg)
     else:
         train_step = make_evaluation_step(expect_fn, mc_sampler)
     train_step = jax.jit(train_step, static_argnames="sample_flag")
@@ -324,10 +267,7 @@ def train(cfg: ConfigDict):
             if isinstance(params, tuple): params = params[1]
             if isinstance(params, tuple): params = params[1]
         mc_state = mc_sampler.init(mckey, params)
-        if optimizer is not None:
-            opt_state = optimizer.init(params)
-        else:
-            opt_state = make_dummy_opt_state(0)
+        opt_state = optimizer.init(params)
         if cfg.sample.burn_in > 0:
             logger.info(f"Burning in the sampler for {cfg.sample.burn_in} steps")
             key, subkey = jax.random.split(key)
@@ -341,13 +281,6 @@ def train(cfg: ConfigDict):
         if len(rest) < 5 and cfg.optim.baseline is not None:
             rest = (*rest, hamiltonian.local_energy())
         train_state = TrainingState(*rest)
-        if optimizer is None:
-            opt_state = train_state.opt_state
-            if opt_state is None:
-                opt_state = make_dummy_opt_state(train_state.step)
-            train_state = TrainingState(train_state.step, train_state.params,
-                                        train_state.mc_state, opt_state,
-                                        train_state.est_state, train_state.sr_state)
 
     # the actual training iteration
     logger.info("Start training")
@@ -365,9 +298,6 @@ def train(cfg: ConfigDict):
         # logging anc checkpointing
         if ii % cfg.log.stat_freq == 0:
             if sflag is not None: aux["nprop"] = sflag
-            if collect_logder:
-                for stat_key in ("log_amp_mean", "log_amp_std", "log_grad_mean_norm"):
-                    aux.setdefault(stat_key, float("nan"))
             _lr = (lr_schedule(train_state.opt_state[-1][0].count) 
                 if callable(lr_schedule) else lr_schedule)
             printer.print_fields({"step": ii, "loss": loss, **aux, "lr": _lr})
