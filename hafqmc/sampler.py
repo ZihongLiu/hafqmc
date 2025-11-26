@@ -22,7 +22,7 @@ class MCSampler(NamedTuple):
     sample: Callable[[KeyArray, Params, State], Tuple[State, Data]]
     init: Callable[[KeyArray, Params], State]
     refresh: Callable[[State, Params], State]
-    compute_score: Callable[[Params, State], PyTree] = None
+    compute_score: Callable[[Data, Params], PyTree] = None
 
     def __call__(self, key: KeyArray, params: Params, state: State):
         """Call the sample function. See `self.sample` for details."""
@@ -87,8 +87,8 @@ def warp_by_flag(sampler: MCSampler, flag: Flag):
         return {**state, flag: raw_state}, data
     init = lambda k, p: {flag: sampler.init(k, p)}
     refresh = lambda s, p: {**s, flag: sampler.refresh(s[flag], p)}
-    def compute_score(p, st):
-        return sampler.compute_score(p, st[flag]) if sampler.compute_score is not None else None
+    def compute_score(data, p):
+        return sampler.compute_score(data, p) if sampler.compute_score is not None else None
     return MCSampler(sample, init, refresh, compute_score)
 
 
@@ -117,10 +117,10 @@ def make_batched(sampler: Sampler, nbatch: int, concat: bool = False):
         vkey = jax.random.split(key, nbatch)
         return jax.vmap(init_fn, (0, None))(vkey, params)
     refresh = jax.vmap(refresh_fn, (0, None))
-    def compute_score(p, st):
+    def compute_score(data, p):
         if compute_score_fn is None:
             return None
-        return jax.vmap(compute_score_fn, (None, 0))(p, st)
+        return jax.vmap(compute_score_fn, (0, None))(data, p)
     return MCSampler(sample, init, refresh, compute_score)
 
 
@@ -128,10 +128,10 @@ def make_batched(sampler: Sampler, nbatch: int, concat: bool = False):
 def make_multistep(sampler: Sampler, nstep: int, concat: bool = False):
     sample_fn, init_fn, refresh_fn, compute_score_fn = sampler
     multisample_fn = make_multistep_fn(sample_fn, nstep, concat)
-    def compute_score(p, st):
+    def compute_score(data, p):
         if compute_score_fn is None:
             return None
-        return compute_score_fn(p, st)
+        return compute_score_fn(data, p)
     return MCSampler(multisample_fn, init_fn, refresh_fn, compute_score)
 
 
@@ -150,7 +150,7 @@ def make_multistep_fn(sample_fn, nstep, concat=False):
 
 def make_gaussian(logdens_fn, fields_shape, mu=0., sigma=1., truncate=None):
     fsize, unravel = ravel_shape(fields_shape)
-    logdens_and_grad_params = jax.value_and_grad(logdens_fn)
+    logdens_grad_params = jax.grad(logdens_fn)
 
     def sample(key, params, state):
         if truncate is not None:
@@ -173,16 +173,16 @@ def make_gaussian(logdens_fn, fields_shape, mu=0., sigma=1., truncate=None):
             ld = logd_gaussian(fields, mu, sigma).sum()
         return (fields, ld)
 
-    def compute_score(p, st):
-        fields, _ = st
-        return logdens_and_grad_params(p, unravel(fields))[1]
+    def compute_score(data, p):
+        fields, _ = data
+        return logdens_grad_params(p, fields)
     return MCSampler(sample, init, refresh, compute_score)
 
 
 def make_metropolis(logdens_fn, fields_shape, sigma=0.05, steps=5):
     fsize, unravel = ravel_shape(fields_shape)
     ravel_logd = lambda p, x: logdens_fn(p, unravel(x))
-    logdens_and_grad_params = jax.value_and_grad(logdens_fn)
+    logdens_grad_params = jax.grad(logdens_fn)
 
     def step(key, params, state):
         x1, ld1 = state
@@ -208,9 +208,9 @@ def make_metropolis(logdens_fn, fields_shape, sigma=0.05, steps=5):
         ld_new = ravel_logd(params, fields)
         return (fields, ld_new)
 
-    def compute_score(p, st):
-        fields, _ = st
-        return logdens_and_grad_params(p, unravel(fields))[1]
+    def compute_score(data, p):
+        fields, _ = data
+        return logdens_grad_params(p, fields)
     return MCSampler(sample, init, refresh, compute_score)
 
 
@@ -218,7 +218,7 @@ def make_langevin(logdens_fn, fields_shape, tau=0.01, steps=5):
     fsize, unravel = ravel_shape(fields_shape)
     ravel_logd = lambda p, x: logdens_fn(p, unravel(x))
     logd_and_grad = jax.value_and_grad(ravel_logd, 1)
-    logdens_and_grad_params = jax.value_and_grad(logdens_fn)
+    logdens_grad_params = jax.grad(logdens_fn)
 
     # log transition probability q(x2|x1)
     def log_q(x2, x1, g1): 
@@ -251,9 +251,9 @@ def make_langevin(logdens_fn, fields_shape, tau=0.01, steps=5):
         ld_new, grads_new = logd_and_grad(params, fields)
         return (fields, grads_new.conj(), ld_new)
 
-    def compute_score(p, st):
-        fields, _, _ = st
-        return logdens_and_grad_params(p, unravel(fields))[1]
+    def compute_score(data, p):
+        fields, _ = data
+        return logdens_grad_params(p, fields)
     return MCSampler(sample, init, refresh, compute_score)
 
 
@@ -261,7 +261,7 @@ def make_hamiltonian(logdens_fn, fields_shape, dt=0.1, length=1.):
     fsize, unravel = ravel_shape(fields_shape)
     ravel_logd = lambda p, x: logdens_fn(p, unravel(x))
     logd_and_grad = jax.value_and_grad(ravel_logd, 1)
-    logdens_and_grad_params = jax.value_and_grad(logdens_fn)
+    logdens_grad_params = jax.grad(logdens_fn)
 
     def sample(key, params, state):
         gkey, ukey = jax.random.split(key)
@@ -285,9 +285,9 @@ def make_hamiltonian(logdens_fn, fields_shape, dt=0.1, length=1.):
         ld_new, grads_new = logd_and_grad(params, fields)
         return (fields, grads_new.conj(), ld_new)
 
-    def compute_score(p, st):
-        fields, _, _ = st
-        return logdens_and_grad_params(p, unravel(fields))[1]
+    def compute_score(data, p):
+        fields, _ = data
+        return logdens_grad_params(p, fields)
     return MCSampler(sample, init, refresh, compute_score)
 
 
@@ -297,7 +297,7 @@ def make_blackjax(logdens_fn, fields_shape, beta=1., kernel="nuts", **kwargs):
     inv_mass = 0.5 * jnp.ones(fsize)
     ravel_logd = lambda p, x: beta * logdens_fn(p, unravel(x))
     kmodule = {"hmc": hmc, "nuts": nuts}[kernel]
-    logdens_and_grad_params = jax.value_and_grad(logdens_fn)
+    logdens_grad_params = jax.grad(logdens_fn)
 
     def sample(key, params, state):
         logprob_fn = partial(ravel_logd, params)
@@ -317,9 +317,9 @@ def make_blackjax(logdens_fn, fields_shape, beta=1., kernel="nuts", **kwargs):
         logprob_fn = partial(ravel_logd, params)
         return kmodule.init(fields, logprob_fn)
 
-    def compute_score(p, st):
-        fields = st.position
-        return logdens_and_grad_params(p, unravel(fields))[1]
+    def compute_score(data, p):
+        fields, _ = data
+        return logdens_grad_params(p, fields)
     return MCSampler(sample, init, refresh, compute_score)
 
 

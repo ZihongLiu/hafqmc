@@ -3,6 +3,7 @@ import logging
 import jax 
 import optax
 from jax import numpy as jnp
+from jax.flatten_util import ravel_pytree
 from optax._src import alias as optax_alias
 from ml_collections import ConfigDict
 from tensorboardX import SummaryWriter
@@ -117,9 +118,14 @@ def make_training_step(loss_and_grad, mc_sampler, optimizer, accumulator=None, n
         mc_state = sampler.refresh(mc_state, params)
         mc_state, data = sampler.sample(key, params, mc_state)
         (loss, aux), grads = loss_and_grad(params, data, ebar)
+        aux = dict(aux)
         if natcfg is not None and getattr(sampler, "compute_score", None) is not None:
-            score = sampler.compute_score(params, mc_state)
+            score = sampler.compute_score(data, params)
             if score is not None:
+                flat_score, _ = ravel_pytree(score)
+                abs_score = jnp.abs(flat_score)
+                aux["score_mean"] = jnp.mean(abs_score)
+                aux["score_std"] = jnp.std(abs_score)
                 grads = _apply_natgrad(grads, score, natcfg)
         grads = tree_map(jnp.conj, grads) # for complex parameters
         if natcfg is not None and natcfg.get("update_mode", "base") == "plain":
@@ -166,7 +172,8 @@ def train(cfg: ConfigDict):
         logger.warning("SummaryWriter disabled due to permission error at %s", cfg.log.stat_path)
         writer = _NullWriter()
     print_fields = {"step": "", "loss": ".4f", "e_tot": ".4f", 
-                    "exp_es": ".4f", "exp_s": ".4f"}
+                    "exp_es": ".4f", "exp_s": ".4f", "lw_mean": ".3f", "lw_std": ".3f",
+                    "score_mean": ".3e", "score_std": ".3e"}
     if cfg.loss.std_factor >= 0:
         print_fields.update({"std_es": ".4f", "std_s": ".4f"})
     print_fields["lr"] = ".1e"

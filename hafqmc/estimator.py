@@ -116,11 +116,16 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet,
         rel_w, lshift = exp_shifted(logov - logsw, normalize="mean")
         exp_es = paxis.all_mean((eloc * sign) * rel_w)
         exp_s = paxis.all_mean(sign * rel_w)
+        # log weight statistics for debugging
+        lw_mean = paxis.all_mean(logov)
+        lw_var = paxis.all_mean((logov - lw_mean) ** 2)
         etot = exp_es.real / exp_s.real
         aux_data = {"e_tot": etot, 
                     "exp_es": exp_es.real, 
                     "exp_s": exp_s.real,
-                    "log_shift": lshift}
+                    "log_shift": lshift,
+                    "lw_mean": lw_mean,
+                    "lw_std": jnp.sqrt(lw_var)}
         if calc_stds:
             tot_w = paxis.all_mean(rel_w) # should be just 1, but provide correct gradient
             var_es = paxis.all_mean(jnp.abs(eloc*sign - exp_es/tot_w)**2 * rel_w) / tot_w
@@ -164,4 +169,3 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet,
         return etot, aux_data
             
     return eval_total
-
