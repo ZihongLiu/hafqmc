@@ -25,7 +25,7 @@ def get_config():
     cfg.hamiltonian = config_dict.ConfigDict({"U": 4.0})
 
     # Keep propagator simple and stable for a tiny test.
-    cfg.ansatz.propagators[0].max_nhs = 16
+    cfg.ansatz.propagators[0].max_nhs = 100
     cfg.ansatz.propagators[0].aux_network = None
     cfg.ansatz.propagators[0].init_tsteps = [0.01]
     cfg.ansatz.propagators[0].sqrt_tsvpar = True
@@ -40,16 +40,18 @@ def get_config():
         "damping": 1e-3,
         "approx": "cg",
         "cg": {"maxiter": 1000, "tol": 1e-6},
+        "precond": True,
+        "rescale_damping": 1e-6,
         "update_mode": "plain",  # apply natgrad directly, no extra optimizer precond
     }
     cfg.optim.grad_clip = 1.0
-    cfg.optim.iteration = 20
-    cfg.optim.lr.start = 1e-3
+    cfg.optim.iteration = 30
+    cfg.optim.lr.start = 0.01
     cfg.optim.lr.delay = 1e3
     cfg.optim.lr.decay = 1.0
 
-    cfg.sample.batch = 200
-    cfg.sample.size = 400
+    cfg.sample.size = 200
+    cfg.sample.batch = 100
     #cfg.sample.sampler = {"name": "mcmc", "sigma": 0.05, "steps": 5}
     cfg.sample.sampler = {"name": "hmc", "dt": 0.1, "length": 1.0}
     cfg.sample.burn_in = 10
@@ -57,7 +59,7 @@ def get_config():
     cfg.loss.sign_factor = 0.0
     cfg.loss.std_factor = 0.0
 
-    cfg.seed = 123
+    cfg.seed = 42
     cfg.log.level = "info"
     cfg.log.stat_path = "tbdata_fisher/"
     cfg.log.ckpt_path = "checkpoint_fisher.pkl"

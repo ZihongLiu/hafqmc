@@ -112,6 +112,7 @@ def default() -> ConfigDict:
             },
             "baseline": None, #{"decay": 0.99},
             "natgrad": None,
+            "precond": None,
         },
         "log": {
             "stat_freq": 1,

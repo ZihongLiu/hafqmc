@@ -40,18 +40,24 @@ def make_optimizer(name, lr_schedule, grad_clip=None, natgrad_cfg=None, **kwargs
     if natgrad_cfg is not None:
         natcfg = {"damping": 1e-3, "approx": "cg",
                   "fallback_to_grad": True, "cg": {"maxiter": 10, "tol": 1e-6},
+                  "rescale_damping": None,
+                  "precond": False,
                   "update_mode": "base"}  # base | plain
         for k, v in natgrad_cfg.items():
             if k == "cg":
                 natcfg["cg"].update(v)
             else:
                 natcfg[k] = v
+        natcfg["lr_fn"] = lr_schedule if callable(lr_schedule) else None
     if name.lower() in ("natural_grad", "natgrad"):
         base_name = kwargs.pop("base", "adam")
         if natcfg is None:
             natcfg = {"damping": 1e-3, "approx": "cg",
                       "fallback_to_grad": True, "cg": {"maxiter": 10, "tol": 1e-6},
+                      "rescale_damping": None,
+                      "precond": False,
                       "update_mode": "base"}
+            natcfg["lr_fn"] = lr_schedule if callable(lr_schedule) else None
     opt_fn = getattr(optax_alias, base_name)
     opt = opt_fn(lr_schedule, **kwargs)
     if grad_clip is not None:
@@ -95,15 +101,26 @@ def _apply_natgrad(grads, score, cfg):
     if score is None:
         return grads
     damping = cfg.get("damping", 0.0)
+    rescale_damp = cfg.get("rescale_damping", damping)
     approx = cfg.get("approx", "cg")
     score = tree_map(jnp.conj, score)
     if approx == "diag":
         diag = fisher_diag(score, grads)
         return tree_map(lambda g, d: g / (d + damping), grads, diag)
     cg_kw = cfg.get("cg", {})
-    mv = lambda v: fisher_vector_product(score, v, damping=damping)
-    nat_g, info = cg_solve(mv, grads, 
-        maxiter=cg_kw.get("maxiter", 10), tol=cg_kw.get("tol", 1e-6))
+    if cfg.get("precond", False):
+        diag = fisher_diag(score, grads)
+        sqrt_diag = tree_map(lambda d: jnp.sqrt(d + rescale_damp), diag)
+        score_tilde = tree_map(lambda s, sd: s / sd, score, sqrt_diag)
+        grads_pre = tree_map(lambda g, sd: g / sd, grads, sqrt_diag)
+        mv = lambda v: fisher_vector_product(score_tilde, v, damping=damping)
+        nat_g_pre, info = cg_solve(mv, grads_pre,
+            maxiter=cg_kw.get("maxiter", 500), tol=cg_kw.get("tol", 1e-6))
+        nat_g = tree_map(lambda ng, sd: ng / sd, nat_g_pre, sqrt_diag)
+    else:
+        mv = lambda v: fisher_vector_product(score_tilde, v, damping=damping)
+        nat_g, info = cg_solve(mv, grads_pre,
+            maxiter=cg_kw.get("maxiter", 500), tol=cg_kw.get("tol", 1e-6))
     if info != 0 and cfg.get("fallback_to_grad", True):
         return grads
     return nat_g
@@ -129,11 +146,10 @@ def make_training_step(loss_and_grad, mc_sampler, optimizer, accumulator=None, n
                 grads = _apply_natgrad(grads, score, natcfg)
         grads = tree_map(jnp.conj, grads) # for complex parameters
         if natcfg is not None and natcfg.get("update_mode", "base") == "plain":
-            lr = (optimizer if callable(optimizer) else None)
-            if callable(lr):
-                lr_val = lr(train_state.opt_state[-1][0].count) if hasattr(train_state.opt_state, "__len__") else lr(0)
-            else:
-                lr_val = 1.0
+            lr_fn = natcfg.get("lr_fn", None)
+            lr_val = 0.005
+            if lr_fn is not None:
+                lr_val = lr_fn(ii)
             params = tree_map(lambda p, g: p - lr_val * g, params, grads)
             updates = opt_state
         else:
