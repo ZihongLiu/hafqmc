@@ -118,8 +118,8 @@ def _apply_natgrad(grads, score, cfg):
             maxiter=cg_kw.get("maxiter", 500), tol=cg_kw.get("tol", 1e-6))
         nat_g = tree_map(lambda ng, sd: ng / sd, nat_g_pre, sqrt_diag)
     else:
-        mv = lambda v: fisher_vector_product(score_tilde, v, damping=damping)
-        nat_g, info = cg_solve(mv, grads_pre,
+        mv = lambda v: fisher_vector_product(score, v, damping=damping)
+        nat_g, info = cg_solve(mv, grads,
             maxiter=cg_kw.get("maxiter", 500), tol=cg_kw.get("tol", 1e-6))
     if info != 0 and cfg.get("fallback_to_grad", True):
         return grads
