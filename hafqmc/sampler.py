@@ -88,7 +88,7 @@ def warp_by_flag(sampler: MCSampler, flag: Flag):
     init = lambda k, p: {flag: sampler.init(k, p)}
     refresh = lambda s, p: {**s, flag: sampler.refresh(s[flag], p)}
     def compute_score(data, p):
-        return sampler.compute_score(data, p) if sampler.compute_score is not None else None
+        return sampler.compute_score(data, p)
     return MCSampler(sample, init, refresh, compute_score)
 
 
@@ -117,10 +117,7 @@ def make_batched(sampler: Sampler, nbatch: int, concat: bool = False):
         vkey = jax.random.split(key, nbatch)
         return jax.vmap(init_fn, (0, None))(vkey, params)
     refresh = jax.vmap(refresh_fn, (0, None))
-    def compute_score(data, p):
-        if compute_score_fn is None:
-            return None
-        return jax.vmap(compute_score_fn, (0, None))(data, p)
+    compute_score = jax.vmap(compute_score_fn, (0, None))
     return MCSampler(sample, init, refresh, compute_score)
 
 
@@ -128,11 +125,7 @@ def make_batched(sampler: Sampler, nbatch: int, concat: bool = False):
 def make_multistep(sampler: Sampler, nstep: int, concat: bool = False):
     sample_fn, init_fn, refresh_fn, compute_score_fn = sampler
     multisample_fn = make_multistep_fn(sample_fn, nstep, concat)
-    def compute_score(data, p):
-        if compute_score_fn is None:
-            return None
-        return compute_score_fn(data, p)
-    return MCSampler(multisample_fn, init_fn, refresh_fn, compute_score)
+    return MCSampler(multisample_fn, init_fn, refresh_fn, compute_score_fn)
 
 
 def make_multistep_fn(sample_fn, nstep, concat=False):

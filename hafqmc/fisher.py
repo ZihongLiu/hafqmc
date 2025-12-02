@@ -21,38 +21,29 @@ def _center_score(score: PyTree):
     return tree_map(lambda s, m: s - m, score, mean)
 
 
-def fisher_diag(score: PyTree, ref: PyTree):
+def fisher_diag(score: PyTree):
     """Mean square of score along sample axis."""
-    sc = _collapse_score_batch(score, ref)
-    sc = _center_score(sc)
-    return tree_map(lambda s: jnp.mean(jnp.abs(s) ** 2, axis=0), sc)
+    return tree_map(lambda s: jnp.mean(jnp.abs(s) ** 2, axis=0), score)
+
+def fisher_diag_keepdims(score: PyTree):
+    """Mean square of score along sample axis."""
+    return tree_map(lambda s: jnp.mean(jnp.abs(s) ** 2, axis=0, keepdims=True), score)
 
 
 def fisher_vector_product(score: PyTree, vec: PyTree, damping: float = 0.0):
     """Compute (F + damping I) v using score samples."""
-    sc = _collapse_score_batch(score, vec)
-    sc = _center_score(sc)
     inner = tree_reduce(
         lambda x, y: x + y,
-        tree_map(lambda s, v: jnp.einsum('i..., ...->i', jnp.conj(s), v), sc, vec))
+        tree_map(lambda s, v: jnp.einsum('i..., ...->i', jnp.conj(s), v), score, vec))
     def _prod(s):
         return jnp.einsum('i,i...->...', inner, s) / s.shape[0]
-    fvp = tree_map(_prod, sc)
+    fvp = tree_map(_prod, score)
     if damping and damping > 0:
         fvp = tree_map(lambda f, v: f + damping * v, fvp, vec)
     return fvp
 
 
-def cg_solve(matvec, b: PyTree, maxiter: int = 10, tol: float = 1e-6):
+def cg_solve(matvec, b: PyTree, maxiter: int = 5000, tol: float = 1e-6):
     """Solve matvec(x)=b with jax.scipy.sparse.linalg.cg on a PyTree."""
-    from jax.flatten_util import ravel_pytree
-    b_flat, unravel = ravel_pytree(b)
-
-    def _matvec(x_flat):
-        x = unravel(x_flat)
-        y = matvec(x)
-        y_flat, _ = ravel_pytree(y)
-        return y_flat
-
-    sol_flat, info = jsp.sparse.linalg.cg(_matvec, b_flat, tol=tol, maxiter=maxiter)
-    return unravel(sol_flat), info
+    sol_flat, info = jsp.sparse.linalg.cg(matvec, b, tol=tol, maxiter=maxiter)
+    return sol_flat, info

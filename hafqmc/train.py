@@ -18,6 +18,7 @@ from .sampler import make_sampler, make_multistep, make_batched, SamplerUnion
 from .utils import ensure_mapping, save_pickle, load_pickle, Printer, cfg_to_yaml
 from .utils import make_moving_avg, PyTree, tree_map
 from .fisher import fisher_vector_product, fisher_diag, cg_solve
+from .fisher import _collapse_score_batch, _center_score
 
 
 class _NullWriter:
@@ -39,7 +40,7 @@ def make_optimizer(name, lr_schedule, grad_clip=None, natgrad_cfg=None, **kwargs
     base_name = name
     if natgrad_cfg is not None:
         natcfg = {"damping": 1e-3, "approx": "cg",
-                  "fallback_to_grad": True, "cg": {"maxiter": 10, "tol": 1e-6},
+                  "cg": {"maxiter": 10, "tol": 1e-6},
                   "rescale_damping": None,
                   "precond": False,
                   "update_mode": "base"}  # base | plain
@@ -53,7 +54,7 @@ def make_optimizer(name, lr_schedule, grad_clip=None, natgrad_cfg=None, **kwargs
         base_name = kwargs.pop("base", "adam")
         if natcfg is None:
             natcfg = {"damping": 1e-3, "approx": "cg",
-                      "fallback_to_grad": True, "cg": {"maxiter": 10, "tol": 1e-6},
+                      "cg": {"maxiter": 10, "tol": 1e-6},
                       "rescale_damping": None,
                       "precond": False,
                       "update_mode": "base"}
@@ -98,31 +99,31 @@ class TrainingState(NamedTuple):
 
 
 def _apply_natgrad(grads, score, cfg):
-    if score is None:
-        return grads
     damping = cfg.get("damping", 0.0)
     rescale_damp = cfg.get("rescale_damping", damping)
     approx = cfg.get("approx", "cg")
-    score = tree_map(jnp.conj, score)
+
+    o_vec_0 = _collapse_score_batch(score, grads)
+    o_vec = _center_score(o_vec_0)
+
     if approx == "diag":
-        diag = fisher_diag(score, grads)
+        diag = fisher_diag(o_vec)
         return tree_map(lambda g, d: g / (d + damping), grads, diag)
     cg_kw = cfg.get("cg", {})
     if cfg.get("precond", False):
-        diag = fisher_diag(score, grads)
+        diag = fisher_diag(o_vec)
         sqrt_diag = tree_map(lambda d: jnp.sqrt(d + rescale_damp), diag)
-        score_tilde = tree_map(lambda s, sd: s / sd, score, sqrt_diag)
+        o_vec_tilde = tree_map(lambda s, sd: s / sd, o_vec, sqrt_diag)
         grads_pre = tree_map(lambda g, sd: g / sd, grads, sqrt_diag)
-        mv = lambda v: fisher_vector_product(score_tilde, v, damping=damping)
+        mv = lambda v: fisher_vector_product(o_vec_tilde, v, damping=damping)
         nat_g_pre, info = cg_solve(mv, grads_pre,
             maxiter=cg_kw.get("maxiter", 500), tol=cg_kw.get("tol", 1e-6))
         nat_g = tree_map(lambda ng, sd: ng / sd, nat_g_pre, sqrt_diag)
     else:
-        mv = lambda v: fisher_vector_product(score, v, damping=damping)
+        mv = lambda v: fisher_vector_product(o_vec, v, damping=damping)
         nat_g, info = cg_solve(mv, grads,
             maxiter=cg_kw.get("maxiter", 500), tol=cg_kw.get("tol", 1e-6))
-    if info != 0 and cfg.get("fallback_to_grad", True):
-        return grads
+
     return nat_g
 
 
