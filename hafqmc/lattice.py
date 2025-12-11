@@ -28,19 +28,12 @@ def _cfg_value(cfg: Any, name: str, default=None):
     return default
 
 
-def _parse_nelec(nelec: Union[int, Sequence[int]]) -> Tuple[int, Optional[Tuple[int, int]]]:
+def _parse_nelec(nelec: Union[int, Sequence[int]]) -> Tuple[int, int]:
     if nelec is None:
-        raise ValueError("Number of electrons must be provided for lattice models")
-    if isinstance(nelec, (tuple, list)):
-        if len(nelec) == 2:
-            nup, ndn = (int(ne) for ne in nelec)
-            return nup + ndn, (nup, ndn)
-        if len(nelec) == 1:
-            total = int(nelec[0])
-            return total, None
-    elif isinstance(nelec, (int, onp.integer)):
-        return int(nelec), None
-    raise ValueError(f"Unsupported electron configuration: {nelec}")
+        raise ValueError("Explicit spin-resolved electron counts (n_up, n_dn) are required")
+    if isinstance(nelec, (tuple, list)) and len(nelec) == 2:
+        return tuple(int(ne) for ne in nelec)  # type: ignore
+    raise ValueError(f"Unsupported electron configuration for spin-separated lattice model: {nelec}")
 
 
 @dataclasses.dataclass
@@ -73,27 +66,26 @@ class ChargeChannelHubbard2D:
     ty_up: float
     tx_dn: float
     ty_dn: float
-    nelec: int
+    nelec: Tuple[int, int]
     onsite_u: float
     mu: float = 0.0
     periodic: bool = True
-    spin_counts: Optional[Tuple[int, int]] = None
 
     def __post_init__(self):
-        if self.nelec <= 0:
-            raise ValueError("nelec must be positive")
+        self.n_up, self.n_dn = _parse_nelec(self.nelec)
+        if self.n_up < 0 or self.n_dn < 0:
+            raise ValueError("Electron counts must be non-negative")
         self.lattice = RectangularLattice(self.dims, periodic=self.periodic)
-        self.nbasis = 2 * self.lattice.n_sites
-        if self.nelec > self.nbasis:
+        self.nbasis_spin = self.lattice.n_sites
+        self.nbasis_total = 2 * self.nbasis_spin
+        self.nelec_total = self.n_up + self.n_dn
+        if self.nelec_total > self.nbasis_total:
             raise ValueError("Number of electrons exceeds available orbitals")
 
-    def _basis_index(self, site: int, spin: int) -> int:
-        # spin: 0 for up block, 1 for down block
-        return site + spin * self.lattice.n_sites
-
     def build_one_body(self) -> NumpyArray:
-        h1e = onp.zeros((self.nbasis, self.nbasis), dtype=onp.float64)
-        for site in range(self.lattice.n_sites):
+        h_up = onp.zeros((self.nbasis_spin, self.nbasis_spin), dtype=onp.float64)
+        h_dn = onp.zeros_like(h_up)
+        for site in range(self.nbasis_spin):
             neighbors = {
                 "x": self.lattice.neighbor(site, axis=0, direction=1),
                 "y": self.lattice.neighbor(site, axis=1, direction=1),
@@ -101,47 +93,39 @@ class ChargeChannelHubbard2D:
             for axis, neighbor in neighbors.items():
                 if neighbor is None:
                     continue
-                for spin, (t_x, t_y) in enumerate(((self.tx_up, self.ty_up),
-                                                   (self.tx_dn, self.ty_dn))):
-                    hop = -t_x if axis == "x" else -t_y
-                    i = self._basis_index(site, spin)
-                    j = self._basis_index(neighbor, spin)
-                    h1e[i, j] = h1e[j, i] = hop
+                hop_up = -(self.tx_up if axis == "x" else self.ty_up)
+                hop_dn = -(self.tx_dn if axis == "x" else self.ty_dn)
+                h_up[site, neighbor] = h_up[neighbor, site] = hop_up
+                h_dn[site, neighbor] = h_dn[neighbor, site] = hop_dn
         if self.mu:
-            h1e -= self.mu * onp.eye(self.nbasis)
+            eye = self.mu * onp.eye(self.nbasis_spin)
+            h_up -= eye
+            h_dn -= eye
         if self.onsite_u:
-            nsite = self.lattice.n_sites
-            h1e[:nsite, :nsite] -= self.onsite_u * onp.eye(nsite)
-        return h1e
+            h_up -= self.onsite_u * onp.eye(self.nbasis_spin)
+        return onp.stack((h_up, h_dn))
 
     def build_charge_cholesky(self) -> NumpyArray:
-        diag_mask = onp.zeros((self.lattice.n_sites, self.nbasis), dtype=onp.float64)
-        for site in range(self.lattice.n_sites):
-            diag_mask[site, self._basis_index(site, 0)] = 1.0
-            diag_mask[site, self._basis_index(site, 1)] = 1.0
+        diag_mask = onp.zeros((self.nbasis_spin, self.nbasis_spin, self.nbasis_spin),
+                              dtype=onp.float64)
+        for site in range(self.nbasis_spin):
+            diag_mask[site, site, site] = 1.0
         coeff = onp.sqrt(self.onsite_u)
-        eye = onp.eye(self.nbasis, dtype=onp.float64)
-        return coeff * diag_mask[..., None] * eye
+        return coeff * diag_mask
 
-    def build_reference_wfn(self, h1e: Optional[NumpyArray] = None) -> NumpyArray:
+    def build_reference_wfn(self, h1e: Optional[NumpyArray] = None):
         if h1e is None:
             h1e = self.build_one_body()
-        if self.spin_counts is None:
-            eigvals, eigvecs = onp.linalg.eigh(h1e)
-            order = onp.argsort(eigvals)
-            return eigvecs[:, order[:self.nelec]]
-        n_up, n_dn = self.spin_counts
-        n_site = self.lattice.n_sites
-        if n_up + n_dn != self.nelec:
-            raise ValueError("spin_counts do not sum to total number of electrons")
-        wfn = onp.zeros((self.nbasis, self.nelec), dtype=h1e.dtype)
-        eval_up, vec_up = onp.linalg.eigh(h1e[:n_site, :n_site])
-        eval_dn, vec_dn = onp.linalg.eigh(h1e[n_site:, n_site:])
-        idx_up = onp.argsort(eval_up)[:n_up]
-        idx_dn = onp.argsort(eval_dn)[:n_dn]
-        wfn[:n_site, :n_up] = vec_up[:, idx_up]
-        wfn[n_site:, n_up:n_up+n_dn] = vec_dn[:, idx_dn]
-        return wfn
+        h_up, h_dn = h1e
+        eval_up, vec_up = onp.linalg.eigh(h_up)
+        eval_dn, vec_dn = onp.linalg.eigh(h_dn)
+        idx_up = onp.argsort(eval_up)[: self.n_up]
+        idx_dn = onp.argsort(eval_dn)[: self.n_dn]
+        w_up = vec_up[:, idx_up]
+        w_dn = vec_dn[:, idx_dn]
+        w_up = jnp.asarray(w_up)
+        w_dn = jnp.asarray(w_dn)
+        return (w_up, w_dn)
 
     def build_hamiltonian(self) -> Hamiltonian:
         h1e = self.build_one_body()
@@ -155,7 +139,8 @@ class ChargeChannelHubbard2D:
                 "tx_dn": self.tx_dn,
                 "ty_dn": self.ty_dn,
                 "mu": self.mu,
-                "spin_counts": self.spin_counts,
+                "n_up": self.n_up,
+                "n_dn": self.n_dn,
             },
             "type": "charge_hubbard_2d",
             "lattice_hubbard": {
@@ -167,7 +152,7 @@ class ChargeChannelHubbard2D:
             h1e=jnp.asarray(h1e),
             ceri=jnp.asarray(ceri),
             enuc=0.0,
-            wfn0=jnp.asarray(wfn0),
+            wfn0=wfn0,
             aux=aux,
         )
 
@@ -190,7 +175,7 @@ def build_lattice_hamiltonian(lattice_cfg, interaction_cfg=None) -> Hamiltonian:
     ty_dn = _cfg_value(lattice_cfg, "ty_dn", tx_up)
     mu = _cfg_value(lattice_cfg, "mu", _cfg_value(interaction_cfg, "mu", 0.0))
     nelec_val = _cfg_value(lattice_cfg, "nelec")
-    nelec_total, spin_counts = _parse_nelec(nelec_val)
+    n_up, n_dn = _parse_nelec(nelec_val)
     onsite_u = _cfg_value(interaction_cfg, "U")
     if onsite_u is None:
         raise ValueError("On-site interaction strength `U` must be specified")
@@ -201,10 +186,9 @@ def build_lattice_hamiltonian(lattice_cfg, interaction_cfg=None) -> Hamiltonian:
         ty_up=float(ty_up),
         tx_dn=float(tx_dn),
         ty_dn=float(ty_dn),
-        nelec=int(nelec_total),
+        nelec=(int(n_up), int(n_dn)),
         onsite_u=float(onsite_u),
         mu=float(mu),
         periodic=periodic,
-        spin_counts=spin_counts,
     )
     return model.build_hamiltonian()

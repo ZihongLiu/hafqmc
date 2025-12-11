@@ -15,11 +15,18 @@ from hafqmc import config as hconfig
 def get_config():
     cfg = hconfig.example()
 
+    #cfg.lattice = config_dict.ConfigDict({
+    #    "dims": (4, 4),
+    #    "t": 1.0,
+    #    "alpha": 0.1,
+    #    "nelec": (6, 10),
+    #    "periodic": True,
+    #})
     cfg.lattice = config_dict.ConfigDict({
-        "dims": (2, 2),
+        "dims": (4, 4),
         "t": 1.0,
-        "alpha": 1.0,
-        "nelec": (2, 2),
+        "alpha": 0.1,
+        "nelec": (6, 10),
         "periodic": True,
     })
     cfg.hamiltonian = config_dict.ConfigDict({"U": 4.0})
@@ -29,34 +36,36 @@ def get_config():
     cfg.ansatz.propagators[0].aux_network = None
     cfg.ansatz.propagators[0].init_tsteps = [0.01]
     cfg.ansatz.propagators[0].sqrt_tsvpar = True
-    cfg.ansatz.propagators[0].init_random = 0.01
-    cfg.ansatz.propagators[0].hermite_ops = False
+    cfg.ansatz.propagators[0].init_random = 0.1
+    cfg.ansatz.propagators[0].hermite_ops = True
     cfg.ansatz.propagators[0].mf_subtract = False
     cfg.ansatz.propagators[0].spin_mixing = False
-
+    
+    cfg.ansatz.propagators[0].parametrize = 'tsteps,wfn,hmf'
+    
     # Natural gradient with a plain update to exercise Fisher/CG.
     cfg.optim.optimizer = {"name": "natural_grad", "base": "adam"}
     cfg.optim.natgrad = {
-        "damping": 1e-3,
+        "damping": 1e-2,
         "approx": "cg",
-        "cg": {"maxiter": 1000, "tol": 1e-6},
-        "precond": True,
-        "rescale_damping": 1e-6,
+        "cg": {"maxiter": 50000, "tol": 1e-6},
+        "precond": None,
+        "rescale_damping": 0,
         "update_mode": "plain",  # apply natgrad directly, no extra optimizer precond
     }
     cfg.optim.grad_clip = 1.0
-    cfg.optim.iteration = 30
-    cfg.optim.lr.start = 0.01
+    cfg.optim.iteration = 300
+    cfg.optim.lr.start = 0.0005
     cfg.optim.lr.delay = 1e3
-    cfg.optim.lr.decay = 1.0
+    cfg.optim.lr.decay = 0.9
 
-    cfg.sample.size = 200
-    cfg.sample.batch = 100
+    cfg.sample.size = 400
+    cfg.sample.batch = 400
     #cfg.sample.sampler = {"name": "mcmc", "sigma": 0.05, "steps": 5}
     cfg.sample.sampler = {"name": "hmc", "dt": 0.1, "length": 1.0}
     cfg.sample.burn_in = 10
 
-    cfg.loss.sign_factor = 0.0
+    cfg.loss.sign_factor = 999
     cfg.loss.std_factor = 0.0
 
     cfg.seed = 42

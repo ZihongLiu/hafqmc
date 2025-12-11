@@ -359,7 +359,7 @@ class Hamiltonian:
     def make_proj_op(self, trial):
         """generate the modified hmf, vhs and enuc for projection"""
         eri = self.ceri if self._eri is None else self._eri
-        hmf_raw = self.h1e - 0.5 * calc_v0(eri)
+        hmf_raw = self.h1e #- 0.5 * calc_v0(eri)
         vhs_raw = self.ceri # vhs is real here, will time 1j in propagator
         if trial is None:
             return hmf_raw, vhs_raw, self.enuc

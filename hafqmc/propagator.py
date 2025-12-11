@@ -240,7 +240,15 @@ class Propagator(nn.Module):
         def app_h(wfn, ii):
             hop = self.hmf_ops[ii]
             hmf = hop(_ts_h[ii])
-            return hop.expm_apply(hmf * self.hmask, wfn), 0.
+            if hmf.ndim == 3:
+                # hmf is spin-dependent, wfn is packed. Unpack, apply, repack.
+                wfn_up, wfn_down = unpack_spin(wfn, nelec)
+                expm_apply_func = hop.expm_apply
+                wfn_up_new = expm_apply_func(hmf[0] * self.hmask, wfn_up)
+                wfn_down_new = expm_apply_func(hmf[1] * self.hmask, wfn_down)
+                return pack_spin((wfn_up_new, wfn_down_new))[0], 0.
+            else:
+                return hop.expm_apply(hmf * self.hmask, wfn), 0.
         def app_v(wfn, ii):
             vop = self.vhs_ops[ii]
             cwfn = unpack_spin(wfn, nelec) if self.dyn_mfshift else None
