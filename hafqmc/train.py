@@ -9,24 +9,17 @@ from ml_collections import ConfigDict
 from tensorboardX import SummaryWriter
 from typing import NamedTuple
 
-from .molecule import build_mf
-from .hamiltonian import Hamiltonian, HamiltonianPW
-from .lattice import build_lattice_hamiltonian
+from .hamiltonian import Hamiltonian
+from .latt_setup import build_lattice_hamiltonian
 from .ansatz import Ansatz, BraKet
 from .estimator import make_eval_total
 from .sampler import make_sampler, make_multistep, make_batched, SamplerUnion
 from .utils import ensure_mapping, save_pickle, load_pickle, Printer, cfg_to_yaml
 from .utils import make_moving_avg, PyTree, tree_map
+
+#SR related
 from .fisher import fisher_vector_product, fisher_diag, cg_solve
 from .fisher import _collapse_score_batch, _center_score
-
-
-class _NullWriter:
-    def add_scalars(self, *args, **kwargs):
-        return None
-    def close(self):
-        return None
-
 
 def lower_penalty(s, factor=1., target=1., power=2.):
     return factor * jnp.maximum(target - s, 0) ** power
@@ -183,11 +176,6 @@ def train(cfg: ConfigDict):
     logger = logging.getLogger("train")
     log_level = getattr(logging, cfg.log.level.upper())
     logger.setLevel(log_level)
-    try:
-        writer = SummaryWriter(cfg.log.stat_path) if cfg.log.stat_path else _NullWriter()
-    except PermissionError:
-        logger.warning("SummaryWriter disabled due to permission error at %s", cfg.log.stat_path)
-        writer = _NullWriter()
     print_fields = {"step": "", "loss": ".4f", "e_tot": ".4f", 
                     "exp_es": ".4f", "exp_s": ".4f", "lw_mean": ".3f", "lw_std": ".3f",
                     "score_mean": ".3e", "score_std": ".3e"}
@@ -215,28 +203,15 @@ def train(cfg: ConfigDict):
 
     # set up the hamiltonian
     if cfg.restart.hamiltonian is None:
-        lattice_cfg = cfg.lattice if "lattice" in cfg else None
-        if lattice_cfg is not None and len(lattice_cfg):
-            logger.info("Building lattice Hamiltonian")
-            hamiltonian = build_lattice_hamiltonian(lattice_cfg, cfg.hamiltonian)
-            print(f"# Non-interacting lattice energy: {hamiltonian.local_energy()}")
-        elif "ueg" in cfg:
-            logger.info("Using uniform electron gas Hamiltonian")
-            hamiltonian = HamiltonianPW.from_ueg(**cfg.ueg)
-            print(f"# HF energy for UEG hamiltonian: {hamiltonian.local_energy()}")
-        else:
-            logger.info("Building molecule and doing HF calculation to get Hamiltonian")
-            mf = build_mf(**cfg.molecule)
-            print(f"# HF energy from pyscf calculation: {mf.e_tot}")
-            if not mf.converged:
-                logger.warning("HF calculation does not converge!")
-            hamiltonian = Hamiltonian.from_pyscf(mf, **cfg.hamiltonian)
+        lattice_cfg = cfg.lattice
+        logger.info("Building lattice Hamiltonian")
+        hamiltonian = build_lattice_hamiltonian(lattice_cfg, cfg.hamiltonian)
+        print(f"# Non-interacting lattice energy: {hamiltonian.local_energy()}")
         save_pickle(cfg.log.hamil_path, hamiltonian.to_tuple())
     else:
         logger.info("Loading Hamiltonian from saved file")
         hamil_data = load_pickle(cfg.restart.hamiltonian)
-        HamCls = Hamiltonian if len(hamil_data) <= 5 else HamiltonianPW
-        hamiltonian = HamCls(*hamil_data)
+        hamiltonian = Hamiltonian(*hamil_data)
         print(f"# HF energy from loaded: {hamiltonian.local_energy()}")
 
     # set up all other classes and functions
@@ -259,8 +234,7 @@ def train(cfg: ConfigDict):
     sampler_1s_nc = make_batched(sampler_1s_1c, sample_batch, concat=False)
     mc_sampler = make_multistep(sampler_1s_nc, sample_step, concat=True)
     lr_schedule = make_lr_schedule(**cfg.optim.lr)
-    optimizer, natcfg = make_optimizer(
-        natgrad_cfg=cfg.optim.natgrad,
+    optimizer, natcfg = make_optimizer(natgrad_cfg=cfg.optim.natgrad,
         lr_schedule=lr_schedule, grad_clip=cfg.optim.grad_clip,
         **ensure_mapping(cfg.optim.optimizer, default_key="name"))
     expect_fn = make_eval_total(hamiltonian, braket, 

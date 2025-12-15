@@ -27,37 +27,6 @@ def default_prop(with_net=False) -> ConfigDict:
     }, 
     type_safe=False, convert_dict=True)
 
-
-def ccsd_prop() -> ConfigDict:
-    return ConfigDict({
-        "type": "ccsd",
-        "with_mask": True,
-        "ortho_intvl": 0,
-        "expm_option": ["scan", 1, 1],
-        "parametrize": False,
-        "timevarying": False,
-        "init_random": 0.,
-        "use_complex": False,
-        "mf_subtract": False,
-        "dyn_mfshift": False,
-    }, 
-    type_safe=False, convert_dict=True)
-
-
-def ueg_prop() -> ConfigDict:
-    return ConfigDict({
-        "init_tsteps": [0.01]*3,
-        "ortho_intvl": 0,
-        "expm_option": ["scan", 6, 1],
-        "parametrize": True,
-        "timevarying": True,
-        "init_random": 0.,
-        "sqrt_tsvpar": True,
-        "use_complex": False,
-    },
-    type_safe=False, convert_dict=True)
-
-
 def default() -> ConfigDict:
     return ConfigDict({
         "restart": {
@@ -66,13 +35,7 @@ def default() -> ConfigDict:
             "states": None,
         },
         "seed": None,
-        "molecule": {},
-        "hamiltonian": {
-            "chol_cut": 1e-6,
-            "orth_ao": None,
-            "full_eri": False,
-            "with_cc": False,
-        },
+        "hamiltonian": None,
         "ansatz":{
             "propagators":[default_prop()],
             "wfn_param": True,
