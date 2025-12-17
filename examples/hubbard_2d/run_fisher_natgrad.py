@@ -11,17 +11,9 @@ if ROOT not in sys.path:
 from hafqmc import train
 from hafqmc import config as hconfig
 
-
 def get_config():
     cfg = hconfig.example()
 
-    #cfg.lattice = config_dict.ConfigDict({
-    #    "dims": (4, 4),
-    #    "t": 1.0,
-    #    "alpha": 0.1,
-    #    "nelec": (6, 10),
-    #    "periodic": True,
-    #})
     cfg.lattice = config_dict.ConfigDict({
         "dims": (4, 4),
         "t": 1.0,
@@ -32,13 +24,10 @@ def get_config():
     cfg.hamiltonian = config_dict.ConfigDict({"U": 4.0})
 
     # Keep propagator simple and stable for a tiny test.
-    cfg.ansatz.propagators[0].max_nhs = 100
-    cfg.ansatz.propagators[0].aux_network = None
     cfg.ansatz.propagators[0].init_tsteps = [0.01]
     cfg.ansatz.propagators[0].sqrt_tsvpar = True
     cfg.ansatz.propagators[0].init_random = 0.1
     cfg.ansatz.propagators[0].hermite_ops = True
-    cfg.ansatz.propagators[0].mf_subtract = False
     cfg.ansatz.propagators[0].spin_mixing = False
     
     cfg.ansatz.propagators[0].parametrize = 'tsteps,wfn,hmf'
@@ -74,7 +63,6 @@ def get_config():
     cfg.log.ckpt_path = "checkpoint_fisher.pkl"
 
     return cfg
-
 
 if __name__ == "__main__":
     train.train(get_config())

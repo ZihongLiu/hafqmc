@@ -24,7 +24,6 @@ class Propagator(nn.Module):
     para_tsteps: bool = False
     cplx_tsteps: bool = False
     sqrt_tsvpar: bool = False
-    dyn_mfshift: bool = False
     
     @nn.nowrap
     @classmethod
@@ -36,7 +35,6 @@ class Propagator(nn.Module):
             use_complex: Union[bool, str, Sequence[str]] = False,
             init_random: float = 0.,
             hermite_ops: bool = False,
-            mf_subtract: bool = False, 
             spin_mixing: Union[bool, float, complex] = False, 
             **init_kwargs):
         # prepare data
@@ -48,7 +46,6 @@ class Propagator(nn.Module):
             init_hmf = block_spin(init_hmf, init_hmf, ptb)
             init_vhs = jax.vmap(block_spin, (0,0,None))(init_vhs, init_vhs, ptb)
             twfn = _make_ghf(twfn)
-        mfwfn = twfn if mf_subtract else None
         # handle parameter options
         _pd = parse_bool(("hmf", "vhs", "tsteps"), parametrize)
         _ifcplx = lambda t: _t_cplx if t else _t_real

@@ -2,12 +2,6 @@ from ml_collections import ConfigDict, config_dict
 
 
 def default_prop(with_net=False) -> ConfigDict:
-    net_dict = {
-        "hidden_sizes": [-1, -1, -1],
-        "actv_fun": "gelu",
-        "zero_init": True,
-        "mod_density": False,
-        }
     return ConfigDict({
         "init_tsteps": [0.01]*3,
         "ortho_intvl": 0,
@@ -18,8 +12,6 @@ def default_prop(with_net=False) -> ConfigDict:
         "sqrt_tsvpar": True,
         "use_complex": False,
         "hermite_ops": False,
-        "mf_subtract": False,
-        "dyn_mfshift": False,
         "spin_mixing": False,
     }, 
     type_safe=False, convert_dict=True)
@@ -94,7 +86,6 @@ def example() -> ConfigDict:
     cfg.ansatz.propagators[0].expm_option = ["scan", 2, 1]
     cfg.ansatz.propagators[0].init_random = 0.1
     cfg.ansatz.propagators[0].sqrt_tsvpar = True
-    cfg.ansatz.propagators[0].mf_subtract = True
     # use adabelief and a long training
     cfg.optim.optimizer = "adabelief"
     cfg.optim.grad_clip = 1.
