@@ -133,10 +133,6 @@ def make_training_step(loss_and_grad, mc_sampler, optimizer, accumulator=None, n
         if natcfg is not None and getattr(sampler, "compute_score", None) is not None:
             score = sampler.compute_score(data, params)
             if score is not None:
-                flat_score, _ = ravel_pytree(score)
-                abs_score = jnp.abs(flat_score)
-                aux["score_mean"] = jnp.mean(abs_score)
-                aux["score_std"] = jnp.std(abs_score)
                 grads = _apply_natgrad(grads, score, natcfg)
         grads = tree_map(jnp.conj, grads) # for complex parameters
         if natcfg is not None and natcfg.get("update_mode", "base") == "plain":
@@ -176,9 +172,9 @@ def train(cfg: ConfigDict):
     logger = logging.getLogger("train")
     log_level = getattr(logging, cfg.log.level.upper())
     logger.setLevel(log_level)
+    writer = SummaryWriter(cfg.log.stat_path)
     print_fields = {"step": "", "loss": ".4f", "e_tot": ".4f", 
-                    "exp_es": ".4f", "exp_s": ".4f", "lw_mean": ".3f", "lw_std": ".3f",
-                    "score_mean": ".3e", "score_std": ".3e"}
+                    "exp_es": ".4f", "exp_s": ".4f"}
     if cfg.loss.std_factor >= 0:
         print_fields.update({"std_es": ".4f", "std_s": ".4f"})
     print_fields["lr"] = ".1e"

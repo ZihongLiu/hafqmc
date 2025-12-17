@@ -71,7 +71,7 @@ class AuxField(nn.Module):
         v_alpha = cmult(step, jnp.sum(fields*vhs*self.v_const))
         log_weight = - 0.5 * (fields ** 2).sum() + v_alpha
         
-        vhs_sum = jnp.outer(fields, vhs)
+        vhs_sum = fields*vhs
         vhs_sum = cmult(step, vhs_sum)
 
         return vhs_sum, log_weight

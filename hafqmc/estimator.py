@@ -98,8 +98,7 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet,
         fields, logsw = data
         if isinstance(fields, jnp.ndarray):
             fields = (fields,)
-        fshape = braket.fields_shape(len(fields) if braket.trial is None
-                                     else tuple(map(len, fields)))
+        fshape = braket.fields_shape()
         # _f0 and _fs0 are just for checking the shape
         _f0 = jax.tree_util.tree_leaves(fields)[0]
         _fs0 = jax.tree_util.tree_leaves(fshape)[0]
@@ -116,16 +115,11 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet,
         rel_w, lshift = exp_shifted(logov - logsw, normalize="mean")
         exp_es = paxis.all_mean((eloc * sign) * rel_w)
         exp_s = paxis.all_mean(sign * rel_w)
-        # log weight statistics for debugging
-        lw_mean = paxis.all_mean(logov)
-        lw_var = paxis.all_mean((logov - lw_mean) ** 2)
         etot = exp_es.real / exp_s.real
         aux_data = {"e_tot": etot, 
                     "exp_es": exp_es.real, 
                     "exp_s": exp_s.real,
-                    "log_shift": lshift,
-                    "lw_mean": lw_mean,
-                    "lw_std": jnp.sqrt(lw_var)}
+                    "log_shift": lshift}
         if calc_stds:
             tot_w = paxis.all_mean(rel_w) # should be just 1, but provide correct gradient
             var_es = paxis.all_mean(jnp.abs(eloc*sign - exp_es/tot_w)**2 * rel_w) / tot_w

@@ -117,7 +117,6 @@ class Propagator(nn.Module):
             hmf = hop(_ts_h[ii])
             # hmf is spin-dependent, wfn is packed. Unpack, apply, repack.
             wfn_up, wfn_down = unpack_spin(wfn, nelec)
-            jax.debug.print("nelec = {}", nelec)
             expm_apply_func = hop.expm_apply
             wfn_up_new   = expm_apply_func(hmf[0], wfn_up  )
             wfn_down_new = expm_apply_func(hmf[1], wfn_down)
