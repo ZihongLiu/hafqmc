@@ -105,13 +105,13 @@ class ChargeChannelHubbard2D:
             h_up -= self.onsite_u * onp.eye(self.nbasis_spin)
         return onp.stack((h_up, h_dn))
 
-    def build_charge_cholesky(self) -> NumpyArray:
-        diag_mask = onp.zeros((self.nbasis_spin, self.nbasis_spin, self.nbasis_spin),
-                              dtype=onp.float64)
+    def build_hubbard_HS(self) -> NumpyArray:
+        couple_list = onp.zeros((self.nbasis_spin),dtype=onp.float64)
         for site in range(self.nbasis_spin):
-            diag_mask[site, site, site] = 1.0
+            couple_list[site] = 1.0
         coeff = onp.sqrt(self.onsite_u)
-        return coeff * diag_mask
+        # return coupling and const term
+        return coeff * couple_list, -couple_list
 
     def build_reference_wfn(self, h1e: Optional[NumpyArray] = None):
         if h1e is None:
@@ -128,9 +128,9 @@ class ChargeChannelHubbard2D:
         return (w_up, w_dn)
 
     def build_hamiltonian(self) -> Hamiltonian:
-        h1e = self.build_one_body()
-        ceri = self.build_charge_cholesky()
-        wfn0 = self.build_reference_wfn(h1e)
+        h1e   = self.build_one_body()
+        v_hub, v_const = self.build_hubbard_HS()
+        wfn0  = self.build_reference_wfn(h1e)
         aux = {
             "lattice": {
                 "dims": self.dims,
@@ -150,8 +150,8 @@ class ChargeChannelHubbard2D:
         }
         return Hamiltonian(
             h1e=jnp.asarray(h1e),
-            ceri=jnp.asarray(ceri),
-            enuc=0.0,
+            v_hub=jnp.asarray(v_hub),
+            v_const=v_const,
             wfn0=wfn0,
             aux=aux,
         )

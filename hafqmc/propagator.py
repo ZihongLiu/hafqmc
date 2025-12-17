@@ -11,7 +11,7 @@ from .utils import parse_bool, ensure_mapping
 from .utils import fix_init
 from .utils import pack_spin, unpack_spin, block_spin
 from .utils import chol_qr
-from .operator import OneBody, AuxField, AuxFieldNet
+from .operator import OneBody, AuxField
 from .hamiltonian import _make_ghf, _has_spin, Hamiltonian
 
 
@@ -25,18 +25,15 @@ class Propagator(nn.Module):
     cplx_tsteps: bool = False
     sqrt_tsvpar: bool = False
     dyn_mfshift: bool = False
-    priori_mask: Optional[ndarray] = None
     
     @nn.nowrap
     @classmethod
     def create(cls, 
             hamiltonian, 
             init_tsteps, *, 
-            max_nhs: Optional[int] = None,
             expm_option: Union[str, tuple] = (),
             parametrize: Union[bool, str, Sequence[str]] = True,
             use_complex: Union[bool, str, Sequence[str]] = False,
-            aux_network: Union[None, Sequence[int], dict] = None,
             init_random: float = 0.,
             hermite_ops: bool = False,
             mf_subtract: bool = False, 
@@ -44,9 +41,7 @@ class Propagator(nn.Module):
             **init_kwargs):
         # prepare data
         twfn = hamiltonian.wfn0
-        init_hmf, init_vhs, init_enuc = hamiltonian.make_proj_op(twfn)
-        if max_nhs is not None:
-            init_vhs = init_vhs[:max_nhs]
+        init_hmf, init_vhs, v_const = hamiltonian.make_proj_op(twfn)
         if spin_mixing:
             ptb = (spin_mixing 
                 if isinstance(spin_mixing, (float, complex)) else 0.01)
@@ -67,21 +62,14 @@ class Propagator(nn.Module):
             dtype=_ifcplx(_cd["hmf"]),
             expm_option=expm_option)
         # make two body operator
-        if aux_network is None:
-            AuxFieldCls = AuxField
-            network_args = {}
-        else:
-            AuxFieldCls = AuxFieldNet
-            network_args = ensure_mapping(aux_network, "hidden_sizes")
-        vhs_op = AuxFieldCls(
+        vhs_op = AuxField(
             init_vhs,
-            trial_wfn=mfwfn,
+            v_const,
             parametrize=_pd["vhs"],
             init_random=init_random,
             hermite_out=hermite_ops,
             dtype=_ifcplx(_cd["vhs"]),
-            expm_option=expm_option,
-            **network_args)
+            expm_option=expm_option)
         # build propagator
         return cls(hmf_op, vhs_op, 
             init_tsteps=init_tsteps, 
@@ -102,19 +90,13 @@ class Propagator(nn.Module):
         _ts_h = jnp.convolve(_ts_v, jnp.array([0.5,0.5]), "full")
         if self.sqrt_tsvpar:
             _ts_v = jnp.sqrt(_ts_v if self.cplx_tsteps else jnp.abs(_ts_v))
-        self.ts_v = (self.param("ts_v", fix_init, _ts_v, _t_tsteps) 
-                     if self.para_tsteps else _ts_v)
+        self.ts_v = _ts_v
+        #self.ts_v = (self.param("ts_v", fix_init, _ts_v, _t_tsteps) 
+        #             if self.para_tsteps else _ts_v)
         self.ts_h = (self.param("ts_h", fix_init, _ts_h, _t_tsteps) 
                      if self.para_tsteps else _ts_h)
         self.nts_h = self.ts_h.shape[0]
         self.nts_v = self.ts_v.shape[0]
-        # operator prioir masks
-        if self.priori_mask is None:
-            self.hmask = self.vmask = 1
-        elif len(self.priori_mask) == 2:
-            self.hmask, self.vmask = self.priori_mask
-        else:
-            self.hmask = self.vmask = self.priori_mask
         # handle the option for time varying operators
         _vd = parse_bool(("hmf", "vhs"), self.timevarying)
         # build Hmf operators
@@ -138,20 +120,16 @@ class Propagator(nn.Module):
         def app_h(wfn, ii):
             hop = self.hmf_ops[ii]
             hmf = hop(_ts_h[ii])
-            if hmf.ndim == 3:
-                # hmf is spin-dependent, wfn is packed. Unpack, apply, repack.
-                wfn_up, wfn_down = unpack_spin(wfn, nelec)
-                expm_apply_func = hop.expm_apply
-                wfn_up_new = expm_apply_func(hmf[0] * self.hmask, wfn_up)
-                wfn_down_new = expm_apply_func(hmf[1] * self.hmask, wfn_down)
-                return pack_spin((wfn_up_new, wfn_down_new))[0], 0.
-            else:
-                return hop.expm_apply(hmf * self.hmask, wfn), 0.
+            # hmf is spin-dependent, wfn is packed. Unpack, apply, repack.
+            wfn_up, wfn_down = unpack_spin(wfn, nelec)
+            expm_apply_func = hop.expm_apply
+            wfn_up_new   = expm_apply_func(hmf[0], wfn_up  )
+            wfn_down_new = expm_apply_func(hmf[1], wfn_down)
+            return pack_spin((wfn_up_new, wfn_down_new))[0], 0.
         def app_v(wfn, ii):
             vop = self.vhs_ops[ii]
-            cwfn = unpack_spin(wfn, nelec) if self.dyn_mfshift else None
-            vhs, lw = vop(_ts_v[ii], fields[ii], curr_wfn=cwfn)
-            return vop.expm_apply(vhs * self.vmask, wfn), lw
+            vhs, lw = vop(_ts_v[ii], fields[ii])
+            return vop.expm_apply(vhs, wfn), lw
         def nmlz(wfn, ii):
             if self.ortho_intvl == 0:
                 return normalize(wfn)

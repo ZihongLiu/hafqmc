@@ -9,20 +9,17 @@ def default_prop(with_net=False) -> ConfigDict:
         "mod_density": False,
         }
     return ConfigDict({
-        "max_nhs": None,
         "init_tsteps": [0.01]*3,
         "ortho_intvl": 0,
         "expm_option": ["scan", 6, 1],
         "parametrize": "all",
         "timevarying": "hmf",
-        "aux_network": net_dict if with_net else None,
         "init_random": 0.,
         "sqrt_tsvpar": True,
         "use_complex": False,
         "hermite_ops": False,
         "mf_subtract": False,
         "dyn_mfshift": False,
-        "priori_mask": None,
         "spin_mixing": False,
     }, 
     type_safe=False, convert_dict=True)
@@ -93,10 +90,8 @@ def default() -> ConfigDict:
 def example() -> ConfigDict:
     cfg = default()
     # use one propagator with 5 steps and 100 aux fields on each step
-    cfg.ansatz.propagators[0].max_nhs = 100
     cfg.ansatz.propagators[0].init_tsteps = [0.1] * 5
     cfg.ansatz.propagators[0].expm_option = ["scan", 2, 1]
-    cfg.ansatz.propagators[0].aux_network = None
     cfg.ansatz.propagators[0].init_random = 0.1
     cfg.ansatz.propagators[0].sqrt_tsvpar = True
     cfg.ansatz.propagators[0].mf_subtract = True
@@ -117,7 +112,6 @@ def example() -> ConfigDict:
     # these are the suggested settings
     return cfg
 
-
 def make_test(cfg) -> ConfigDict:
     cfg.trial = {
         "propagators": [],
@@ -127,4 +121,3 @@ def make_test(cfg) -> ConfigDict:
     }
     cfg.optim.lr.start = 0.
     return cfg
-    

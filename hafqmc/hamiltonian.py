@@ -3,7 +3,7 @@ import numpy as onp
 from jax import numpy as jnp
 from jax import scipy as jsp
 
-from .utils import tree_map, scatter
+from .utils import tree_map
 
 def _has_spin(wfn):
     return not (isinstance(wfn, (jnp.ndarray, onp.ndarray)) 
@@ -36,21 +36,21 @@ def _align_rdm(rdm, nao):
         return lrdm[0,0]+lrdm[1,1], lrdm
     raise ValueError("unknown rdm type")
 
-def calc_e2b_hubbard(rdm, nao, U_icf):
+def calc_pot_hubbard(rdm, nao, ham_u):
     gd, gl = _align_rdm(rdm, nao)
     # gl (2,nao,nao)
     if gl.ndim == 3 and gl.shape[-1] == nao:
         gl_0 = gl[0,:,:]
         gl_1 = gl[1,:,:]
-        return U_icf * jnp.einsum("ii,ii", gl_0, gl_1)
+        return ham_u * jnp.einsum("ii,ii", gl_0, gl_1)
     # gl (2,2,nao,nao)
     if gl.ndim == 4 and gl.shape[-1] == nao:
         gl_00 = gl[0,0,:,:]
         gl_10 = gl[1,0,:,:]
         gl_01 = gl[0,1,:,:]
         gl_11 = gl[1,1,:,:]
-        return U_icf * ( jnp.einsum("ii,ii", gl_00, gl_11) - jnp.einsum("ii,ii", gl_01, gl_10) )
-    raise ValueError("unknown gl type in calc_e2b_Hubbard")
+        return ham_u * ( jnp.einsum("ii,ii", gl_00, gl_11) - jnp.einsum("ii,ii", gl_01, gl_10) )
+    raise ValueError("unknown gl type in calc_pot_Hubbard")
    
     
 def calc_ovlp_ns(V, U):
@@ -150,60 +150,16 @@ def calc_rdm(V, U):
     return jnp.stack((calc_rdm_ns(Va, Ua), calc_rdm_ns(Vb, Ub)), 0)
 
 
-def calc_e1b(h1e, rdm):
+def calc_kin(h1e, rdm):
     # jnp.einsum("ij,ij", h1e, rdm)
     gd, gl = _align_rdm(rdm, h1e.shape[-1])
     return (h1e * gd).sum()
 
 
-def calc_e1b_hubbard(h1e, rdm):
+def calc_kin_hubbard(h1e, rdm):
     """One-body plus Hartree shift for lattice Hubbard models."""
     e_kin = (h1e * rdm).sum()
     return e_kin
-
-
-def calc_e2b(eri, rdm):
-    gs, ga = _align_rdm(rdm, eri.shape[-1])
-    if eri.ndim == 4:
-        return calc_ej_dense(eri, gs) - calc_ek_dense(eri, ga)
-    elif eri.ndim == 3:
-        return calc_ej_chol(eri, gs) - calc_ek_chol(eri, ga)
-    else:
-        raise RuntimeError(f"invalid shape of ERI: {eri.shape}")
-
-def calc_ej_dense(eri, srdm):
-    return 0.5 * jnp.einsum("prqs,pr,qs", eri, srdm, srdm)
-
-def calc_ej_chol(ceri, srdm):
-    chol_j = jnp.einsum("kpr,pr->k", ceri, srdm)
-    return 0.5 * jnp.einsum("k,k", chol_j, chol_j)
-
-def calc_ek_dense(eri, rdm):
-    assert rdm.ndim in (3, 4)
-    subs = "prqs,lps,lqr" if rdm.ndim == 3 else "prqs,abps,baqr"
-    return 0.5 * jnp.einsum(subs, eri, rdm, rdm)
-
-def calc_ek_chol(ceri, rdm):
-    assert rdm.ndim in (3, 4)
-    chol_k = jnp.einsum("kpr,...ps->k...rs", ceri, rdm)
-    subs = "klrs,klsr" if rdm.ndim == 3 else "kabrs,kbasr"
-    return 0.5 * jnp.einsum(subs, chol_k, chol_k)
-
-
-def calc_v0(eri):
-    if eri.ndim == 4:
-        return calc_v0_dense(eri)
-    elif eri.ndim == 3:
-        return calc_v0_chol(eri)
-    else:
-        raise RuntimeError(f"invalid shape of ERI: {eri.shape}")
-
-def calc_v0_dense(eri):
-    return jnp.einsum("prrs->ps", eri)
-
-def calc_v0_chol(ceri):
-    return jnp.einsum("kpr,krs->ps", ceri, ceri)
-
 
 def calc_theta_ns(V, U):
     V_h = V.conj().T
@@ -227,80 +183,29 @@ def calc_rdm_opt(V, theta):
     tha, thb = theta
     return jnp.stack((tha @ Va.conj().T, thb @ Vb.conj().T), 0)
 
-
-def calc_e2b_opt(ceri, bra, theta):
-    bra, theta = _align_wfn(bra, theta)
-    if _has_spin(bra) and _has_spin(theta):
-        ej, ek = calc_ejk_opt_u(ceri, bra, theta)
-    else:
-        if bra.shape[0] == ceri.shape[-1]:
-            ej, ek = calc_ejk_opt_r(ceri, bra, theta)
-        else:
-            ej, ek = calc_ejk_opt_g(ceri, bra, theta)
-    return ej - ek
-
-def calc_ejk_opt_r(ceri, bra, theta):
-    f = jnp.einsum("kpq,pi,qj->kij", ceri, bra.conj(), theta)
-    ej = 2 * jnp.sum(f.trace(0, -1, -2) ** 2)
-    ek = jnp.einsum("kij,kji", f, f)
-    return ej, ek
-
-def calc_ejk_opt_u(ceri, bra, theta):
-    ej = ek = 0.
-    fup = jnp.einsum("kpq,pi,qj->kij", ceri, bra[0].conj(), theta[0])
-    cup = fup.trace(0, -1, -2)
-    ek += 0.5 * jnp.einsum("kij,kji", fup, fup)
-    del fup
-    fdn = jnp.einsum("kpq,pi,qj->kij", ceri, bra[1].conj(), theta[1])
-    cdn = fdn.trace(0, -1, -2)
-    ek += 0.5 * jnp.einsum("kij,kji", fdn, fdn)
-    ej = 0.5 * jnp.sum((cup + cdn)**2)
-    return ej, ek
-
-def calc_ejk_opt_g(ceri, bra, theta):
-    nao = ceri.shape[-1]
-    nele = bra.shape[-1]
-    bra = bra.reshape(2, nao, nele)
-    theta = theta.reshape(2, nao, nele)
-    f = jnp.einsum("kpq,api,aqj->kij", ceri, bra.conj(), theta)
-    ej = 0.5 * jnp.sum(f.trace(0, -1, -2) ** 2)
-    ek = 0.5 * jnp.einsum("kij,kji", f, f)
-    return ej, ek
-
-
 class Hamiltonian:
 
-    def __init__(self, h1e, ceri, enuc, wfn0, aux=None, *, full_eri=False):
+    def __init__(self, h1e, v_hub, v_const, wfn0, aux=None, *, full_eri=False):
         self.h1e = jnp.asarray(h1e)
-        self.ceri = jnp.asarray(ceri)
-        self._eri = jnp.einsum("kpr,kqs->prqs", ceri, ceri) if full_eri else None
-        self.enuc = enuc
+        self.v_hub = jnp.asarray(v_hub)
+        self.v_const = jnp.asarray(v_const)
         self.wfn0 = tree_map(jnp.asarray, wfn0)
         self.aux = aux if aux is not None else {}
         self.nbasis = self.h1e.shape[-1]
         lattice_meta = self.aux.get("lattice_hubbard")
-        if lattice_meta is not None:
-            lattice_meta = dict(lattice_meta)
-            lattice_meta.setdefault("nsite", self.nbasis // 2)
-            self._lattice_hubbard = lattice_meta
-        else:
-            self._lattice_hubbard = None
+        
+        lattice_meta = dict(lattice_meta)
+        lattice_meta.setdefault("nsite", self.nbasis // 2)
+        self._lattice_hubbard = lattice_meta
 
-    def calc_e1b(self, rdm):
-        if self._lattice_hubbard is not None:
-            return calc_e1b_hubbard(self.h1e, rdm)
-        return calc_e1b(self.h1e, rdm)
+    def calc_kin(self, rdm):
+        #return calc_kin(self.h1e, rdm)
+        return calc_kin_hubbard(self.h1e, rdm)
     
-    def calc_e2b(self, rdm):
-        if self._lattice_hubbard is not None:
-            return calc_e2b_hubbard(rdm, self._lattice_hubbard["nsite"],
+    def calc_pot(self, rdm):
+        return calc_pot_hubbard(rdm, self._lattice_hubbard["nsite"],
                                     self._lattice_hubbard["U"])
-        eri = self.ceri if self._eri is None else self._eri
-        return calc_e2b(eri, rdm)
     
-    def calc_e2b_opt(self, bra, theta):
-        return calc_e2b_opt(self.ceri, bra, theta)
-
     calc_ovlp  = staticmethod(calc_ovlp)
     calc_slov  = staticmethod(calc_slov)
     calc_rdm   = staticmethod(calc_rdm)
@@ -310,38 +215,22 @@ class Hamiltonian:
         """the normalized energy from two slater determinants"""
         bra = bra if bra is not None else self.wfn0
         ket = ket if ket is not None else self.wfn0
-        if self._lattice_hubbard is not None:
-            le_fn = self.local_energy_raw
-        else:
-            le_fn = (self.local_energy_opt 
-                if optimize and self._eri is None else self.local_energy_raw)
+        le_fn = self.local_energy
         return le_fn(bra, ket)
 
-    def local_energy_raw(self, bra, ket):
+    def local_energy(self, bra, ket):
         rdm = calc_rdm(bra, ket)
-        return self.enuc + self.calc_e1b(rdm) + self.calc_e2b(rdm)
+        return self.calc_kin(rdm) + self.calc_pot(rdm)
     
-    def local_energy_opt(self, bra, ket):
-        bra, ket = _align_wfn(bra, ket)
-        theta = calc_theta(bra, ket)
-        rdm = calc_rdm_opt(bra, theta)
-        return self.enuc + self.calc_e1b(rdm) + self.calc_e2b_opt(bra, theta)
+    #def local_energy(self, bra, ket):
+    #    bra, ket = _align_wfn(bra, ket)
+    #    theta = calc_theta(bra, ket)
+    #    rdm = calc_rdm_opt(bra, theta)
+    #    return self.calc_kin(rdm) + self.calc_pot(rdm)
 
-    def make_proj_op(self, trial):
-        """generate the modified hmf, vhs and enuc for projection"""
-        eri = self.ceri if self._eri is None else self._eri
-        hmf_raw = self.h1e #- 0.5 * calc_v0(eri)
-        vhs_raw = self.ceri # vhs is real here, will time 1j in propagator
-        if trial is None:
-            return hmf_raw, vhs_raw, self.enuc
-        rdm_t = calc_rdm(trial, trial)
-        if rdm_t.ndim == 3:
-            rdm_t = rdm_t.sum(0)
-        vbar = jnp.einsum("kpq,pq->k", vhs_raw, rdm_t)
-        enuc = self.enuc - 0.5 * (vbar**2).sum()
-        hmf = hmf_raw + jnp.einsum('kpq,k->pq', vhs_raw, vbar)
-        vhs = vhs_raw - vbar.reshape(-1,1,1) * jnp.eye(vhs_raw.shape[-1]) / rdm_t.trace()
-        return hmf, vhs, enuc
+    def make_proj_op(self):
+        """generate the modified hmf, vhs for projection"""
+        return self.h1e, self.v_hub, self.v_const
 
     def to_tuple(self):
-        return (self.h1e, self.ceri, self.enuc, self.wfn0, self.aux)
+        return (self.h1e, self.v_hub, self.v_const, self.wfn0, self.aux)

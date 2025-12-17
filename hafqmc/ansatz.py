@@ -41,8 +41,8 @@ class Ansatz(nn.Module):
         return cls(init_wfn, propagators=ansatz_props, **ansatz_kwargs)
 
     @nn.nowrap
-    def fields_shape(self, max_prop=None):
-        nprop = len(self.propagators) if max_prop is None else max_prop
+    def fields_shape(self):
+        nprop = len(self.propagators)
         return tuple(p.fields_shape() for p in self.propagators[:nprop])
 
     def setup(self):
@@ -71,27 +71,16 @@ class Ansatz(nn.Module):
 
 class BraKet(nn.Module):
     ansatz: Ansatz
-    trial: Optional[Ansatz] = None
 
     @nn.nowrap
-    def fields_shape(self, max_prop=None):
-        lmp, rmp = (max_prop if isinstance(max_prop, (tuple, list))
-                    else (max_prop, max_prop))
-        if self.trial is None:
-            return tree_map(lambda s: onp.array((2, *s)), 
-                    self.ansatz.fields_shape(rmp))
-        else:
-            return (self.trial.fields_shape(lmp), 
-                    self.ansatz.fields_shape(rmp))
+    def fields_shape(self):
+        return tree_map(lambda s: onp.array((2, *s)), 
+                self.ansatz.fields_shape())
 
     def __call__(self, fields):
-        if self.trial is None:
-            out = jax.vmap(self.ansatz)(fields)
-            bra_out = tree_map(lambda x: x[0], out)
-            ket_out = tree_map(lambda x: x[1], out)
-        else:
-            bra_out = self.trial(fields[0])
-            ket_out = self.ansatz(fields[1])
+        out = jax.vmap(self.ansatz)(fields)
+        bra_out = tree_map(lambda x: x[0], out)
+        ket_out = tree_map(lambda x: x[1], out)
         return bra_out, ket_out
 
     def sign_logov(self, fields):
