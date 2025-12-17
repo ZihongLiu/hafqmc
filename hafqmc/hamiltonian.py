@@ -211,10 +211,10 @@ class Hamiltonian:
     calc_rdm   = staticmethod(calc_rdm)
     calc_theta = staticmethod(calc_theta)
 
-    def local_energy(self, bra=None, ket=None, optimize=True):
+    def local_energy_HF(self):
         """the normalized energy from two slater determinants"""
-        bra = bra if bra is not None else self.wfn0
-        ket = ket if ket is not None else self.wfn0
+        bra = self.wfn0
+        ket = self.wfn0
         le_fn = self.local_energy
         return le_fn(bra, ket)
 

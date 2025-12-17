@@ -118,8 +118,8 @@ class ChargeChannelHubbard2D:
             h1e = self.build_one_body()
         h_up, h_dn = h1e
         lam = 0.01
-        r_up = np.diag(1 - 2*(np.arange(self.nbasis_spin) % 2))
-        r_dn =-np.diag(1 - 2*(np.arange(self.nbasis_spin) % 2))
+        r_up = onp.diag(1 - 2*(onp.arange(self.nbasis_spin) % 2))
+        r_dn =-onp.diag(1 - 2*(onp.arange(self.nbasis_spin) % 2))
         h_up_afm = h_up + lam * r_up
         h_dn_afm = h_up + lam * r_dn
         eval_up, vec_up = onp.linalg.eigh(h_up_afm)

@@ -206,13 +206,13 @@ def train(cfg: ConfigDict):
         lattice_cfg = cfg.lattice
         logger.info("Building lattice Hamiltonian")
         hamiltonian = build_lattice_hamiltonian(lattice_cfg, cfg.hamiltonian)
-        print(f"# Non-interacting lattice energy: {hamiltonian.local_energy()}")
+        print(f"# Non-interacting lattice energy: {hamiltonian.local_energy_HF()}")
         save_pickle(cfg.log.hamil_path, hamiltonian.to_tuple())
     else:
         logger.info("Loading Hamiltonian from saved file")
         hamil_data = load_pickle(cfg.restart.hamiltonian)
         hamiltonian = Hamiltonian(*hamil_data)
-        print(f"# HF energy from loaded: {hamiltonian.local_energy()}")
+        print(f"# HF energy from loaded: {hamiltonian.local_energy_HF()}")
 
     # set up all other classes and functions
     logger.info("Setting up the training loop")
@@ -258,14 +258,14 @@ def train(cfg: ConfigDict):
             logger.info(f"Burning in the sampler for {cfg.sample.burn_in} steps")
             key, subkey = jax.random.split(key)
             mc_state = sampler_1s_nc.burn_in(subkey, params, mc_state, cfg.sample.burn_in)
-        ebar = hamiltonian.local_energy() if cfg.optim.baseline is not None else None
+        ebar = hamiltonian.local_energy_HF() if cfg.optim.baseline is not None else None
         train_state = TrainingState(0, params, mc_state, opt_state, ebar)
     else:
         logger.info("Loading parameters and states from saved file")
         key, *rest = load_pickle(cfg.restart.states)
         rest = rest[0] if len(rest) == 1 else (0, *rest)
         if len(rest) < 5 and cfg.optim.baseline is not None:
-            rest = (*rest, hamiltonian.local_energy())
+            rest = (*rest, hamiltonian.local_energy_HF())
         train_state = TrainingState(*rest)
 
     # the actual training iteration

@@ -67,8 +67,8 @@ class AuxField(nn.Module):
             self.vhs = self.init_vhs
 
     def __call__(self, step, fields):
-        vhs = symmetrize(self.vhs) if self.hermite_out else self.vhs
-        v_alpha = cmult(step, jnp.sum(fields*vhs*v_const))
+        vhs = self.vhs
+        v_alpha = cmult(step, jnp.sum(fields*vhs*self.v_const))
         log_weight = - 0.5 * (fields ** 2).sum() + v_alpha
         
         vhs_sum = jnp.outer(fields, vhs)
@@ -81,19 +81,9 @@ class AuxField(nn.Module):
         _expm_op = self.expm_option
         _expm_op = (_expm_op,) if isinstance(_expm_op, str) else _expm_op
 
-        def op_exp_apply() -> ExpmFnType
-            def op_hub_exp_rmult(A,B):
-                expA = jnp.exp(A)
-                return jnp.einsum("ij,j->ij", expA, B)
+        def op_hub_exp_rmult(A,B):
+            expA = jnp.exp(A)
+            nB = expA[:,None]*B
+            return nB
 
-        def spin_block_expm(fun_expm: ExpmFnType) -> ExpmFnType:
-            def new_expm(A, B):
-                ndim = A.shape[-1]
-                nelec = B.shape[-1]
-                fB = B.reshape(2, ndim, nelec).swapaxes(0,1).reshape(ndim, 2*nelec)
-                nfB = fun_expm(A, fB)
-                nB = nfB.reshape(ndim, 2, nelec).swapaxes(0,1).reshape(2*ndim, nelec)
-                return nB
-            return new_expm
-
-        return spin_block_expm(op_exp_apply)
+        return op_hub_exp_rmult

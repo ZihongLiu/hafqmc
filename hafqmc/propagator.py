@@ -38,14 +38,12 @@ class Propagator(nn.Module):
             spin_mixing: Union[bool, float, complex] = False, 
             **init_kwargs):
         # prepare data
-        twfn = hamiltonian.wfn0
-        init_hmf, init_vhs, v_const = hamiltonian.make_proj_op(twfn)
+        init_hmf, init_vhs, v_const = hamiltonian.make_proj_op()
         if spin_mixing:
             ptb = (spin_mixing 
                 if isinstance(spin_mixing, (float, complex)) else 0.01)
             init_hmf = block_spin(init_hmf, init_hmf, ptb)
             init_vhs = jax.vmap(block_spin, (0,0,None))(init_vhs, init_vhs, ptb)
-            twfn = _make_ghf(twfn)
         # handle parameter options
         _pd = parse_bool(("hmf", "vhs", "tsteps"), parametrize)
         _ifcplx = lambda t: _t_cplx if t else _t_real
@@ -119,6 +117,7 @@ class Propagator(nn.Module):
             hmf = hop(_ts_h[ii])
             # hmf is spin-dependent, wfn is packed. Unpack, apply, repack.
             wfn_up, wfn_down = unpack_spin(wfn, nelec)
+            jax.debug.print("nelec = {}", nelec)
             expm_apply_func = hop.expm_apply
             wfn_up_new   = expm_apply_func(hmf[0], wfn_up  )
             wfn_down_new = expm_apply_func(hmf[1], wfn_down)
