@@ -267,9 +267,21 @@ def make_hamiltonian(logdens_fn, fields_shape, dt=0.1, length=1.):
         (qn, gn, ldn), accepted = mh_select(ukey, ratio, state, (q2, g2, ld2))
         return (qn, gn, ldn), (unravel(qn), ldn)
 
+    #def init(key, params):
+    #    sigma, mu = 1., 0.
+    #    fields = jax.random.normal(key, (fsize,)) * sigma + mu
+    #    return refresh((fields, None, None), params)
+
     def init(key, params):
-        sigma, mu = 1., 0.
-        fields = jax.random.normal(key, (fsize,)) * sigma + mu
+        m0    = 0.1     # AFM 种子幅度
+        sigma = 0.02    # 噪声强度（建议远小于 m0）
+
+        idx = jnp.arange(fsize)
+        stagger = jnp.where(idx % 2 == 0, 1.0, -1.0)
+
+        mu = m0 * stagger
+        fields = mu + sigma * jax.random.normal(key, (fsize,))
+
         return refresh((fields, None, None), params)
 
     def refresh(state, params):

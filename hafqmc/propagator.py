@@ -148,15 +148,30 @@ class Propagator(nn.Module):
         return wfn, log_weight.real
 
 
-def orthonormalize_ns(wfn):
-    owfn, rmat = chol_qr(wfn)
-    rdiag = rmat.diagonal(0,-1,-2)
-    # chol_qr gaurantees rdiag is real and positive
-    # rabs = jnp.abs(rdiag)
-    # owfn *= rdiag / rabs
-    logd = jnp.sum(jnp.log(rdiag.real), axis=-1)
-    return owfn, logd
+#def orthonormalize_ns(wfn):
+#    owfn, rmat = chol_qr(wfn)
+#    rdiag = rmat.diagonal(0,-1,-2)
+#    # chol_qr gaurantees rdiag is real and positive
+#    # rabs = jnp.abs(rdiag)
+#    # owfn *= rdiag / rabs
+#    logd = jnp.sum(jnp.log(rdiag.real), axis=-1)
+#    return owfn, logd
 
+## Full QR decomposition
+def orthonormalize_ns(wfn):
+    # Householder QR
+    owfn, rmat = jnp.linalg.qr(wfn, mode="reduced")
+    # R 的对角线（可能是 ± 或复相位）
+    rdiag = jnp.diagonal(rmat, axis1=-2, axis2=-1)
+    # 构造相位/符号因子，使对角线变成正实数
+    phase = rdiag / jnp.abs(rdiag)
+    phase = jnp.where(jnp.abs(rdiag) > 0, phase, 1.0)
+    # 把相位吸收到 Q 里
+    owfn = owfn * jnp.conj(phase)[..., None, :]
+    # 规范化后的“等效 rdiag”是 |rdiag|
+    logd = jnp.sum(jnp.log(jnp.abs(rdiag)), axis=-1)
+
+    return owfn, logd
 
 def orthonormalize(wfn, nelec=None):
     if isinstance(wfn, tuple):
