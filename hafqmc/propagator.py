@@ -38,7 +38,7 @@ class Propagator(nn.Module):
             spin_mixing: Union[bool, float, complex] = False, 
             **init_kwargs):
         # prepare data
-        init_hmf, init_vhs, v_const = hamiltonian.make_proj_op()
+        init_hmf, init_vhs, v_const, sq_alpha1, sq_alpha2 = hamiltonian.make_proj_op()
         if spin_mixing:
             ptb = (spin_mixing 
                 if isinstance(spin_mixing, (float, complex)) else 0.01)
@@ -60,6 +60,8 @@ class Propagator(nn.Module):
         vhs_op = AuxField(
             init_vhs,
             v_const,
+            sq_alpha1,
+            sq_alpha2,
             parametrize=_pd["vhs"],
             init_random=init_random,
             hermite_out=hermite_ops,
@@ -76,7 +78,7 @@ class Propagator(nn.Module):
     def fields_shape(self):
         nts = len(self.init_tsteps)
         nfield = self.vhs_op.nfield
-        return onp.array((nts, nfield))
+        return onp.array((nts, 2, nfield))
 
     def setup(self):
         # handle the time steps, for Hmf and Vhs separately
@@ -110,21 +112,24 @@ class Propagator(nn.Module):
         log_weight = 0. # + 0.5 * self.nts_v * self.nsite
         # get prop times
         _ts_h = -self.ts_h # the negation of t goes to here
-        _ts_v = 1j * self.ts_v if self.sqrt_tsvpar else jnp.sqrt(-self.ts_v+0j)
+        _ts_v = jnp.sqrt(self.ts_v)
         # step functions in iterative prop
         def app_h(wfn, ii):
             hop = self.hmf_ops[ii]
             hmf = hop(_ts_h[ii])
             # hmf is spin-dependent, wfn is packed. Unpack, apply, repack.
-            wfn_up, wfn_down = unpack_spin(wfn, nelec)
-            expm_apply_func = hop.expm_apply
-            wfn_up_new   = expm_apply_func(hmf[0], wfn_up  )
-            wfn_down_new = expm_apply_func(hmf[1], wfn_down)
-            return pack_spin((wfn_up_new, wfn_down_new))[0], 0.
+            wfn_up, wfn_dn = unpack_spin(wfn, nelec)
+            wfn_up_new = hop.expm_apply(hmf[0], wfn_up)
+            wfn_dn_new = hop.expm_apply(hmf[1], wfn_dn)
+            return pack_spin((wfn_up_new, wfn_dn_new))[0], 0.
         def app_v(wfn, ii):
             vop = self.vhs_ops[ii]
-            vhs, lw = vop(_ts_v[ii], fields[ii])
-            return vop.expm_apply(vhs, wfn), lw
+            # vhs is spin-dependent, wfn is packed. Unpack, apply, repack.
+            vhs_up, vhs_dn, lw = vop(_ts_v[ii], fields[ii])
+            wfn_up, wfn_dn = unpack_spin(wfn, nelec)
+            wfn_up_new = vop.expm_apply(vhs_up, wfn_up)
+            wfn_dn_new = vop.expm_apply(vhs_dn, wfn_dn)
+            return pack_spin((wfn_up_new, wfn_dn_new))[0], lw
         def nmlz(wfn, ii):
             if self.ortho_intvl == 0:
                 return normalize(wfn)

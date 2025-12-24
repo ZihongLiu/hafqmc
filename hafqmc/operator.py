@@ -45,6 +45,8 @@ class OneBody(nn.Module):
 class AuxField(nn.Module):
     init_vhs: jnp.ndarray
     v_const : jnp.ndarray
+    sq_alpha1 : float
+    sq_alpha2 : float
     parametrize: bool = False
     init_random: float = 0.
     hermite_out: bool = False
@@ -68,13 +70,20 @@ class AuxField(nn.Module):
 
     def __call__(self, step, fields):
         vhs = self.vhs
-        v_alpha = cmult(step, jnp.sum(fields*vhs*self.v_const))
-        log_weight = - 0.5 * (fields ** 2).sum() + v_alpha
+        v_alpha = 1j * step * self.sq_alpha1 * \
+                jnp.sum(fields[0,:]*vhs*self.v_const)
+        log_weight = -0.5 * jnp.sum(jnp.square(fields)) + v_alpha
         
-        vhs_sum = fields*vhs
-        vhs_sum = cmult(step, vhs_sum)
+        real_field = step * self.sq_alpha2 * fields[1, :]
+        imag_field = step * self.sq_alpha1 * fields[0, :]
+        
+        cmplx_field_up =  real_field + 1j * imag_field
+        cmplx_field_dn = -real_field + 1j * imag_field
 
-        return vhs_sum, log_weight
+        vhs_sum_up = cmplx_field_up * vhs
+        vhs_sum_dn = cmplx_field_dn * vhs
+
+        return vhs_sum_up, vhs_sum_dn, log_weight
     
     @property
     def expm_apply(self):

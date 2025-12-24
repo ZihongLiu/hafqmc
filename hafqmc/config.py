@@ -83,7 +83,7 @@ def example() -> ConfigDict:
     cfg = default()
     # use one propagator with 5 steps and 100 aux fields on each step
     cfg.ansatz.propagators[0].init_tsteps = [0.1] * 5
-    cfg.ansatz.propagators[0].expm_option = ["scan", 2, 1]
+    cfg.ansatz.propagators[0].expm_option = ["scan", 6, 1]
     cfg.ansatz.propagators[0].init_random = 0.1
     cfg.ansatz.propagators[0].sqrt_tsvpar = True
     # use adabelief and a long training

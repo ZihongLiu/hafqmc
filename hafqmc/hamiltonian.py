@@ -191,7 +191,7 @@ class Hamiltonian:
         self.v_const = jnp.asarray(v_const)
         self.wfn0 = tree_map(jnp.asarray, wfn0)
         self.aux = aux if aux is not None else {}
-        self.nbasis = self.h1e.shape[-1]
+        self.nbasis = self.h1e.shape[-1]*2
         lattice_meta = self.aux.get("lattice_hubbard")
         
         lattice_meta = dict(lattice_meta)
@@ -229,8 +229,10 @@ class Hamiltonian:
     #    return self.calc_kin(rdm) + self.calc_pot(rdm)
 
     def make_proj_op(self):
+        sq_alpha1 = self._lattice_hubbard["sqrt_alpha_charge"]
+        sq_alpha2 = self._lattice_hubbard["sqrt_alpha_spin"]
         """generate the modified hmf, vhs for projection"""
-        return self.h1e, self.v_hub, self.v_const
+        return self.h1e, self.v_hub, self.v_const, sq_alpha1, sq_alpha2
 
     def to_tuple(self):
         return (self.h1e, self.v_hub, self.v_const, self.wfn0, self.aux)
