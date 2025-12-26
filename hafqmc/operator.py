@@ -74,14 +74,11 @@ class AuxField(nn.Module):
                 jnp.sum(fields[0,:]*vhs*self.v_const)
         log_weight = -0.5 * jnp.sum(jnp.square(fields)) + v_alpha
         
-        real_field = step * self.sq_alpha2 * fields[1, :]
-        imag_field = step * self.sq_alpha1 * fields[0, :]
+        real_field = step * self.sq_alpha2 * fields[1, :] * vhs
+        imag_field = step * self.sq_alpha1 * fields[0, :] * vhs
         
-        cmplx_field_up =  real_field + 1j * imag_field
-        cmplx_field_dn = -real_field + 1j * imag_field
-
-        vhs_sum_up = cmplx_field_up * vhs
-        vhs_sum_dn = cmplx_field_dn * vhs
+        vhs_sum_up =  real_field + 1j * imag_field
+        vhs_sum_dn = -real_field + 1j * imag_field
 
         return vhs_sum_up, vhs_sum_dn, log_weight
     

@@ -68,7 +68,8 @@ class ChargeChannelHubbard2D:
     ty_dn: float
     nelec: Tuple[int, int]
     onsite_u: float
-    alpha_u: float
+    sqrt_alpha_charge: float
+    sqrt_alpha_spin: float
     mu: float = 0.0
     periodic: bool = True
 
@@ -138,9 +139,6 @@ class ChargeChannelHubbard2D:
         v_hub, v_const = self.build_hubbard_HS()
         wfn0  = self.build_reference_wfn(h1e)
 
-        sqrt_alpha_charge = float(onp.sqrt(    self.alpha_u))
-        sqrt_alpha_spin   = float(onp.sqrt(1.0-self.alpha_u))
-
         aux = {
             "lattice": {
                 "dims": self.dims,
@@ -155,8 +153,8 @@ class ChargeChannelHubbard2D:
             "type": "charge_hubbard_2d",
             "lattice_hubbard": {
                 "U": float(self.onsite_u),
-                "sqrt_alpha_charge": sqrt_alpha_charge,
-                "sqrt_alpha_spin": sqrt_alpha_spin,
+                "sqrt_alpha_charge": float(self.sqrt_alpha_charge),
+                "sqrt_alpha_spin": float(self.sqrt_alpha_spin),
                 "nsite": int(self.lattice.n_sites),
             },
         }
@@ -190,6 +188,9 @@ def build_lattice_hamiltonian(lattice_cfg, interaction_cfg=None) -> Hamiltonian:
     n_up, n_dn = _parse_nelec(nelec_val)
     onsite_u = _cfg_value(interaction_cfg, "U")
     alpha_u = _cfg_value(interaction_cfg, "alpha_u")
+    sqrt_alpha_charge = float(onp.sqrt(    alpha_u))
+    sqrt_alpha_spin   = float(onp.sqrt(1.0-alpha_u))
+
     if onsite_u is None:
         raise ValueError("On-site interaction strength `U` must be specified")
     periodic = bool(_cfg_value(lattice_cfg, "periodic", True))
@@ -201,7 +202,8 @@ def build_lattice_hamiltonian(lattice_cfg, interaction_cfg=None) -> Hamiltonian:
         ty_dn=float(ty_dn),
         nelec=(int(n_up), int(n_dn)),
         onsite_u=float(onsite_u),
-        alpha_u=float(alpha_u),
+        sqrt_alpha_charge=float(sqrt_alpha_charge),
+        sqrt_alpha_spin=float(sqrt_alpha_spin),
         mu=float(mu),
         periodic=periodic,
     )
