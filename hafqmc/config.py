@@ -9,7 +9,6 @@ def default_prop(with_net=False) -> ConfigDict:
         "parametrize": "all",
         "timevarying": "hmf",
         "init_random": 0.,
-        "sqrt_tsvpar": True,
         "use_complex": False,
         "hermite_ops": False,
         "spin_mixing": False,
@@ -85,7 +84,6 @@ def example() -> ConfigDict:
     cfg.ansatz.propagators[0].init_tsteps = [0.1] * 5
     cfg.ansatz.propagators[0].expm_option = ["scan", 6, 1]
     cfg.ansatz.propagators[0].init_random = 0.1
-    cfg.ansatz.propagators[0].sqrt_tsvpar = True
     # use adabelief and a long training
     cfg.optim.optimizer = "adabelief"
     cfg.optim.grad_clip = 1.

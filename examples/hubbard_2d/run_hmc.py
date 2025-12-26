@@ -21,12 +21,11 @@ def get_config():
         "nelec": (8, 8),
         "periodic": True,
     })
-    cfg.hamiltonian = config_dict.ConfigDict({"U": 4.0, "alpha_u": 0.3,})
+    cfg.hamiltonian = config_dict.ConfigDict({"U": 4.0, "alpha_u": 0.0,})
 
     # Keep propagator simple and stable for a tiny test.
-    cfg.ansatz.propagators[0].init_tsteps = [0.10]
-    cfg.ansatz.propagators[0].sqrt_tsvpar = True
-    cfg.ansatz.propagators[0].ortho_intvl = 5
+    cfg.ansatz.propagators[0].init_tsteps = [0.10]*16
+    cfg.ansatz.propagators[0].ortho_intvl = 10
     cfg.ansatz.propagators[0].init_random = 0.0
     cfg.ansatz.propagators[0].hermite_ops = True
     cfg.ansatz.propagators[0].spin_mixing = False

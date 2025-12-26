@@ -23,7 +23,6 @@ class Propagator(nn.Module):
     timevarying: Union[bool, str, Sequence[str]] = False
     para_tsteps: bool = False
     cplx_tsteps: bool = False
-    sqrt_tsvpar: bool = False
     
     @nn.nowrap
     @classmethod
@@ -85,9 +84,7 @@ class Propagator(nn.Module):
         _t_tsteps = _t_cplx if self.cplx_tsteps else _t_real
         _ts_v = jnp.asarray(self.init_tsteps).reshape(-1)
         _ts_h = jnp.convolve(_ts_v, jnp.array([0.5,0.5]), "full")
-        if self.sqrt_tsvpar:
-            _ts_v = jnp.sqrt(_ts_v if self.cplx_tsteps else jnp.abs(_ts_v))
-        self.ts_v = _ts_v
+        self.ts_v = jnp.sqrt(_ts_v)
         #self.ts_v = (self.param("ts_v", fix_init, _ts_v, _t_tsteps) 
         #             if self.para_tsteps else _ts_v)
         self.ts_h = (self.param("ts_h", fix_init, _ts_h, _t_tsteps) 
@@ -112,7 +109,7 @@ class Propagator(nn.Module):
         log_weight = 0. # + 0.5 * self.nts_v * self.nsite
         # get prop times
         _ts_h = -self.ts_h # the negation of t goes to here
-        _ts_v = jnp.sqrt(self.ts_v)
+        _ts_v =  self.ts_v
         # step functions in iterative prop
         def app_h(wfn, ii):
             hop = self.hmf_ops[ii]

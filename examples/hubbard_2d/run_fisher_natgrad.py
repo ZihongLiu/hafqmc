@@ -17,20 +17,20 @@ def get_config():
     cfg.lattice = config_dict.ConfigDict({
         "dims": (4, 4),
         "t": 1.0,
-        "alpha": 0.1,
-        "nelec": (6, 10),
+        "alpha": 1.0,
+        "nelec": (8, 8),
         "periodic": True,
     })
-    cfg.hamiltonian = config_dict.ConfigDict({"U": 4.0})
+    cfg.hamiltonian = config_dict.ConfigDict({"U": 4.0, "alpha": 0.3,})
 
     # Keep propagator simple and stable for a tiny test.
-    cfg.ansatz.propagators[0].init_tsteps = [0.01]
-    cfg.ansatz.propagators[0].sqrt_tsvpar = True
-    cfg.ansatz.propagators[0].init_random = 0.1
+    cfg.ansatz.propagators[0].init_tsteps = [0.05]
+    cfg.ansatz.propagators[0].init_random = 0.0
     cfg.ansatz.propagators[0].hermite_ops = True
     cfg.ansatz.propagators[0].spin_mixing = False
     
-    cfg.ansatz.propagators[0].parametrize = 'tsteps,wfn,hmf'
+    #cfg.ansatz.propagators[0].parametrize = 'tsteps,wfn,hmf'
+    cfg.ansatz.propagators[0].parametrize = None
     
     # Natural gradient with a plain update to exercise Fisher/CG.
     cfg.optim.optimizer = {"name": "natural_grad", "base": "adam"}
